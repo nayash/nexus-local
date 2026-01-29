@@ -1,0 +1,28 @@
+[project]
+name = "nexus-local"
+version = "0.1.0"
+description = ""
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Outliers Tech", email = "outliers91@gmail.com" }
+]
+dependencies = [
+    "flet>=0.80.4"
+]
+
+[dependency-groups]
+dev = [
+    "flet-cli>=0.80.4",
+    "flet-desktop-light>=0.80.4",
+    "flet-web>=0.80.4",
+]
+
+[tool.flet]
+org = "com.outliers"
+product = "nexus-local"
+company = "Outliers"
+copyright = "Copyright (C) 2023-2026 by Asutosh Nayak"
+
+[tool.flet.app]
+path = "src"

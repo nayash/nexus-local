@@ -1,0 +1,12 @@
+flet[all]
+requests
+python-dotenv
+pydantic
+langgraph
+langchain-core
+langchain-ollama
+langchain-community
+lancedb
+pypdf
+langchain-text-splitters
+pandas
