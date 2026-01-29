@@ -1,25 +1,20 @@
 import flet as ft
-
+from styles import ColorPalette
+from app_layout import AppLayout
 
 def main(page: ft.Page):
-    counter = ft.Text("0", size=50, data=0)
+    # Page Configuration
+    page.title = "Nexus Local"
+    page.theme_mode = ft.ThemeMode.DARK
+    page.bgcolor = ColorPalette.BG_PRIMARY
+    page.padding = 0
+    page.window_min_width = 800
+    page.window_min_height = 600
 
-    def increment_click(e):
-        counter.data += 1
-        counter.value = str(counter.data)
+    # Initialize Layout
+    app = AppLayout(page)
+    
+    page.add(app)
 
-    page.floating_action_button = ft.FloatingActionButton(
-        icon=ft.Icons.ADD, on_click=increment_click
-    )
-    page.add(
-        ft.SafeArea(
-            expand=True,
-            content=ft.Container(
-                content=counter,
-                alignment=ft.Alignment.CENTER,
-            ),
-        )
-    )
-
-
-ft.run(main)
+if __name__ == "__main__":
+    ft.run(main)

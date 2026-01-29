@@ -3,19 +3,19 @@ name = "nexus-local"
 version = "0.1.0"
 description = ""
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = "=3.12"
 authors = [
     { name = "Outliers Tech", email = "outliers91@gmail.com" }
 ]
 dependencies = [
-    "flet>=0.80.4"
+    "flet=0.80.4"
 ]
 
 [dependency-groups]
 dev = [
-    "flet-cli>=0.80.4",
-    "flet-desktop-light>=0.80.4",
-    "flet-web>=0.80.4",
+    "flet-cli=0.80.4",
+    "flet-desktop-light=0.80.4",
+    "flet-web=0.80.4",
 ]
 
 [tool.flet]
