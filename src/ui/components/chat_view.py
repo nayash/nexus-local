@@ -1,6 +1,7 @@
 import flet as ft
 from styles import ColorPalette, TextStyles
 from src.core.config import Config
+from src.core.utils import run_ollama_pull
 
 class ChatView(ft.Container):
     def __init__(self):
@@ -45,6 +46,7 @@ class ChatView(ft.Container):
             bgcolor=ColorPalette.BG_SECONDARY,
             border_color=ColorPalette.BORDER,
             border_radius=10,
+            on_select=self.on_model_change
         )
 
         return ft.Column(
@@ -76,6 +78,47 @@ class ChatView(ft.Container):
             expand=True,
             spacing=0
         )
+
+    async def on_model_change(self, e):
+        """
+        Called when the user selects a different model.
+        Checks if the model exists locally; if not, pulls it.
+        """
+        print("Model change event triggered")
+        model_name = e.control.value
+        if not model_name:
+            return
+
+        # 1. Create a Text control we can update specifically
+        status_text = ft.Text(f"Checking status of {model_name}...")
+
+        # 2. Create the SnackBar (Set long duration so it stays during download)
+        progress_snack = ft.SnackBar(
+            content=status_text,
+            show_close_icon=True,
+            duration=300000  # 5 minutes (prevents auto-hide during long downloads)
+        )
+
+        # 3. Open it using the new Flet 0.80+ API
+        self.page.show_dialog(progress_snack)
+
+        # 4. Define the callback to update the Text control directly
+        async def progress_callback(msg: str):
+            status_text.value = msg
+            status_text.update() # Update only the text, not the whole page
+
+        # 5. Run the pull logic
+        try:
+            # Ensure run_ollama_pull is imported and is async
+            result_msg = await run_ollama_pull(model_name, progress_callback)
+            status_text.value = result_msg
+            status_text.color = "green"
+        except Exception as ex:
+            status_text.value = f"Error: {str(ex)}"
+            status_text.color = "red"
+        
+        # Final UI refresh for the text color change
+        status_text.update()
 
     def add_message(self, text, is_user):
         alignment = ft.MainAxisAlignment.END if is_user else ft.MainAxisAlignment.START
