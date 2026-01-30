@@ -1,6 +1,8 @@
 import flet as ft
 from styles import ColorPalette
 from app_layout import AppLayout
+from startup_view import StartupView
+from src.core.startup import StartupResult
 
 def main(page: ft.Page):
     # Page Configuration
@@ -11,10 +13,21 @@ def main(page: ft.Page):
     page.window_min_width = 800
     page.window_min_height = 600
 
-    # Initialize Layout
-    app = AppLayout(page)
-    
-    page.add(app)
+    if page.data is None:
+        page.data = {}
+
+    def on_startup_success(result: StartupResult):
+        # Transition to main app
+        page.clean()
+        app = AppLayout(page)
+        # Store search flag if needed in app state
+        print(f'Web search enabled: {result.web_search_enabled}')
+        # page.client_storage.set("web_search_enabled", result.web_search_enabled)
+        page.data["web_search_enabled"] = result.web_search_enabled
+        page.add(app)
+
+    # Initialize with StartupView
+    page.add(StartupView(page, on_success=on_startup_success))
 
 if __name__ == "__main__":
     ft.run(main)
