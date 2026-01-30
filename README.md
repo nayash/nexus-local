@@ -125,3 +125,7 @@ nexus-local/
 |   |── tools/           # tools for Agents to use
 |   |── notebooks/       # for any ipynb files
 ```
+
+
+### Run instruction for Flet:
+PYTHONPATH=. flet run --recursive src/ui/main.py

@@ -1,5 +1,6 @@
 import flet as ft
 from styles import ColorPalette, TextStyles
+from src.core.config import Config
 
 class ChatView(ft.Container):
     def __init__(self):
@@ -37,12 +38,8 @@ class ChatView(ft.Container):
         )
 
         model_dropdown = ft.Dropdown(
-            options=[
-                ft.dropdown.Option("Llama-3-8B"),
-                ft.dropdown.Option("Mistral-7B"),
-                ft.dropdown.Option("Gemma-7B"),
-            ],
-            value="Llama-3-8B",
+            options=[ft.dropdown.Option(model) for model in Config.SUPPORTED_MODELS],
+            value=Config.SUPPORTED_MODELS[0] if Config.SUPPORTED_MODELS else None,
             width=150,
             text_style=ft.TextStyle(color=ColorPalette.TEXT_PRIMARY, size=12),
             bgcolor=ColorPalette.BG_SECONDARY,
