@@ -39,6 +39,7 @@ class ChatView(ft.Container):
             expand=True,
             border_radius=20,
             content_padding=15,
+            shift_enter=True, # Enter to submit, Shift+Enter for new line
             on_submit=self.trigger_send # Bind Enter key
         )
         print(f'model_name to be made default: {get_setting("model_name", Config.SUPPORTED_MODELS[0] if Config.SUPPORTED_MODELS else None)}')
@@ -109,7 +110,9 @@ class ChatView(ft.Container):
         # 2. Show "Thinking" Placeholder
         thinking_text = "Thinking..."
         bot_message_control = self.add_message(thinking_text, is_user=False)
-        bot_text_control = bot_message_control.content
+        # We need to find the specific markdown/text control inside the container to update it
+        # However, with the new complex structure (Markdown + ExpansionTile), 
+        # it's better to update the whole container content once the response arrives.
         
         # 3. Stream Response
         full_response = ""
@@ -121,18 +124,82 @@ class ChatView(ft.Container):
             
             async for chunk in run_agent_stream(query, [], context):
                 full_response = chunk
-                # For now, run_agent_stream yields the full final text node by node.
-                # Once we implement real streaming, we'd append 'chunk' to full_response.
-                # Since we are getting the final message content directly now:
-                bot_text_control.value = full_response
-                bot_text_control.update()
+                # Re-parse and update the entire content of the bubble
+                bot_message_control.content = self._parse_message_content(full_response)
+                bot_message_control.update()
                 
         except Exception as ex:
-            bot_text_control.value = f"Error: {str(ex)}"
-            bot_text_control.color = ColorPalette.ERROR
-            bot_text_control.update()
+            bot_message_control.content = ft.Text(f"Error: {str(ex)}", color=ColorPalette.ERROR)
+            bot_message_control.update()
         
         self.is_processing = False
+
+    def _parse_message_content(self, text):
+        """
+        Parses message text to handle <think>...</think> tags.
+        Returns a Column of controls (Markdown + ExpansionTile).
+        """
+        import re
+        
+        controls = []
+        # Pattern to find <think> blocks
+        pattern = r'<think>(.*?)</think>'
+        
+        last_pos = 0
+        for match in re.finditer(pattern, text, re.DOTALL):
+            # Part before <think>
+            pre_text = text[last_pos:match.start()].strip()
+            if pre_text:
+                controls.append(
+                    ft.Markdown(
+                        pre_text,
+                        selectable=True,
+                        extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                        on_tap_link=lambda e: self.page.launch_url(e.data),
+                    )
+                )
+            
+            # The <think> block
+            thought_text = match.group(1).strip()
+            if thought_text:
+                controls.append(
+                    ft.Container(
+                        content=ft.ExpansionTile(
+                            title=ft.Text("Thought Process", size=12, italic=True, color=ColorPalette.TEXT_SECONDARY),
+                            controls=[
+                                ft.Markdown(
+                                    thought_text,
+                                    selectable=True,
+                                    extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                                    code_theme="atom-one-dark"
+                                )
+                            ],
+                            initially_expanded=False,
+                            bgcolor=ft.Colors.TRANSPARENT,
+                            collapsed_bgcolor=ft.Colors.TRANSPARENT,
+                            text_color=ColorPalette.TEXT_SECONDARY,
+                            controls_padding=ft.padding.only(left=10, bottom=10),
+                        ),
+                        border=ft.border.all(1, ColorPalette.BORDER),
+                        border_radius=10,
+                        margin=ft.margin.only(top=5, bottom=5)
+                    )
+                )
+            last_pos = match.end()
+            
+        # Remaining text after the last </think>
+        post_text = text[last_pos:].strip()
+        if post_text:
+            controls.append(
+                ft.Markdown(
+                    post_text,
+                    selectable=True,
+                    extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                    on_tap_link=lambda e: self.page.launch_url(e.data),
+                )
+            )
+            
+        return ft.Column(controls=controls, spacing=5, tight=True)
 
     async def on_model_change(self, e):
         """
@@ -179,11 +246,10 @@ class ChatView(ft.Container):
         
         # Final UI refresh for the text color change
         status_text.update()
- 
+
     def add_message(self, text, is_user):
         alignment = ft.MainAxisAlignment.END if is_user else ft.MainAxisAlignment.START
         bg_color = ColorPalette.ACCENT if is_user else ColorPalette.BG_SECONDARY
-        text_color = ColorPalette.TEXT_PRIMARY if is_user else ColorPalette.TEXT_PRIMARY # Both white for now
         
         avatar = ft.CircleAvatar(
             content=ft.Text("U" if is_user else "N"),
@@ -191,8 +257,16 @@ class ChatView(ft.Container):
             radius=16
         )
  
+        # Bubble content
+        if is_user:
+            # User messages usually don't have <think> blocks, just use simple text/markdown
+            content_control = ft.Text(text, color=ColorPalette.TEXT_PRIMARY, size=14)
+        else:
+            # Bot messages use the parser
+            content_control = self._parse_message_content(text)
+
         message_bubble = ft.Container(
-            content=ft.Text(text, color=text_color, size=14),
+            content=content_control,
             bgcolor=bg_color,
             padding=15,
             border_radius=ft.BorderRadius(
@@ -200,7 +274,9 @@ class ChatView(ft.Container):
                 bottom_left=0 if is_user else 15, 
                 bottom_right=15 if is_user else 0
             ),
-            width=None, # Auto width
+            # RESPONSIVENESS: Limit max width so it doesn't span the whole window
+            # max_width=600, 
+            constraints=ft.BoxConstraints(max_width=600),
         )
  
         row_controls = [message_bubble]
@@ -218,4 +294,4 @@ class ChatView(ft.Container):
             self.chat_history.update()
         except RuntimeError:
             pass
-        return message_bubble  # Return container to allow updating text later
+        return message_bubble  # Return container to allow updating content later

@@ -76,7 +76,7 @@ def agent_node(state: AgentState):
     trimmed_history = trim_messages(state["messages"], max_messages=12)
     
     messages = [SystemMessage(content=SYSTEM_PROMPT)] + trimmed_history
-    
+    print(f'messages: size: {len(messages)} --> {messages}')
     # 1. Retrieve LLM based on UserSettings
     current_model = get_setting("model_name", "llama3.1")
     llm_instance = get_cached_llm(current_model)

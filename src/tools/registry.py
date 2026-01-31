@@ -62,7 +62,7 @@ def get_current_time():
     """
     now = datetime.now()
     # We return a string that explicitly tells the LLM what to do
-    return f"The Current Date is {now.strftime('%Y-%m-%d')}. You MUST use the year {now.year} for all age calculations. Ignore your training data."
+    return f"The Current Date and Time is {now.strftime('%Y-%m-%d %H:%M:%S')}. You MUST use the year {now.year} for all age calculations. Ignore your training data."
 
 # List of tools available to the brain
 TOOLS = [web_search_tool, local_search_tool, get_current_time]
