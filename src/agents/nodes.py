@@ -67,11 +67,22 @@ SYSTEM_PROMPT = """You are Nexus, a specialized research assistant with access t
 # Module-level cache for LLM instances to avoid frequent re-initialization
 _llm_cache = {}
 
-def get_cached_llm(model_name: str):
-    if model_name not in _llm_cache:
-        print(f"   ⚙️ Initializing LLM: {model_name}")
-        _llm_cache[model_name] = get_llm(model_name)
-    return _llm_cache[model_name]
+def get_cached_llm(model_name: str, with_tools: bool = True):
+    cache_key = f"{model_name}_{with_tools}"
+    if cache_key not in _llm_cache:
+        print(f"   ⚙️ Initializing LLM: {model_name} (Tools: {with_tools})")
+        llm = ChatOllama(
+            model=model_name,
+            temperature=0,
+            base_url=Config.OLLAMA_BASE_URL,
+            headers={"X-Thinking-Mode": "enable"}
+        )
+        if with_tools:
+            _llm_cache[cache_key] = llm.bind_tools(TOOLS)
+        else:
+            _llm_cache[cache_key] = llm
+            
+    return _llm_cache[cache_key]
 
 def agent_node(state: AgentState):
     print("--- 🤖 NODE: AGENT ---")
@@ -83,7 +94,8 @@ def agent_node(state: AgentState):
     print(f'messages: size: {len(messages)} --> {messages}')
     # 1. Retrieve LLM based on UserSettings
     current_model = get_setting("model_name", "llama3.1")
-    llm_instance = get_cached_llm(current_model)
+    current_model = get_setting("model_name", "llama3.1")
+    llm_instance = get_cached_llm(current_model, with_tools=True)
         
     # --- FOCUS MODE CHECK ---
     # NOW: Read from state, not session

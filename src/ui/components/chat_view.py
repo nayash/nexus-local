@@ -132,12 +132,14 @@ class ChatView(ft.Container):
         Background task to generate a short title for the chat using the LLM.
         """
         try:
+            print(f"Background: Generating title for chat {chat_id} with query '{query}'")
             from src.agents.nodes import get_cached_llm
             from langchain_core.messages import SystemMessage, HumanMessage
             
             # Use a fast model if available, or just the current one
             model_name = get_setting("model_name", "llama3.1")
-            llm = get_cached_llm(model_name)
+            print(f"Background: Using model {model_name} for title creation")
+            llm = get_cached_llm(model_name, with_tools=False)
             
             prompt = [
                 SystemMessage(content="You are a helpful assistant. Generate a short, concise title (max 4 words) for the following query. Do not use quotes."),
@@ -146,12 +148,14 @@ class ChatView(ft.Container):
             
             response = llm.invoke(prompt)
             title = response.content.strip().replace('"', '')
+            print(f"Background: Generated title '{title}'")
             
             # Update DB
             self.repo.update_chat_title(chat_id, title)
             print(f"Chat {chat_id} renamed to: {title}")
             
             if self.on_update:
+                print("Background: Triggering UI update callback...")
                 self.on_update()
             
         except Exception as e:
@@ -226,14 +230,18 @@ class ChatView(ft.Container):
         # --- Persistence Start ---
         is_new_chat = False
         if not self.current_chat_id:
+            print("Creating new chat session...")
             self.current_chat_id = self.repo.create_chat(title="New Chat")
             is_new_chat = True
+            print(f"New chat created with ID: {self.current_chat_id}")
         
         # Save User Message
         self.repo.add_message(self.current_chat_id, "user", query)
+        print(f"Saved user message to DB for chat {self.current_chat_id}")
         
         # Trigger renaming if new chat
         if is_new_chat:
+            print("Starting background title generation thread...")
             threading.Thread(target=self._generate_title_async, args=(self.current_chat_id, query), daemon=True).start()
         # --- Persistence End ---
 
@@ -262,6 +270,9 @@ class ChatView(ft.Container):
             self.repo.add_message(self.current_chat_id, "assistant", full_response)
                 
         except Exception as ex:
+            import traceback
+            traceback.print_exc()
+            print(f"Error details: {ex}")
             bot_message_control.content = ft.Text(f"Error: {str(ex)}", color=ColorPalette.ERROR)
             bot_message_control.update()
         
@@ -278,107 +289,116 @@ class ChatView(ft.Container):
         
         controls = []
         
-        # 1. Check for <think> block
-        # We only handle ONE think block for now (standard for R1/DeepSeek)
-        # Regex to find the start of the block
-        start_match = re.search(r'<think>', text)
-        
-        if start_match:
-            # A. Content BEFORE the think block
-            pre_text = text[:start_match.start()].strip()
-            if pre_text:
-                controls.append(
-                    ft.Markdown(
-                        pre_text,
-                        selectable=True,
-                        extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-                        on_tap_link=lambda e: self.page.launch_url(e.data),
-                    )
-                )
+        try:
+            # Type Safety Check
+            if not isinstance(text, str):
+                text = str(text)
+
+            # 1. Check for <think> block
+            # We only handle ONE think block for now (standard for R1/DeepSeek)
+            # Regex to find the start of the block
+            start_match = re.search(r'<think>', text)
             
-            # B. The Think Block
-            # Check if it is closed
-            remainder = text[start_match.end():]
-            end_match = re.search(r'</think>', remainder)
-            
-            if end_match:
-                # Closed thought
-                thought_text = remainder[:end_match.start()].strip()
-                post_text = remainder[end_match.end():].strip()
-                
-                if thought_text:
+            if start_match:
+                # A. Content BEFORE the think block
+                pre_text = text[:start_match.start()].strip()
+                if pre_text:
                     controls.append(
-                        ft.Container(
-                            content=ft.ExpansionTile(
-                                title=ft.Text("Thought Process", size=12, italic=True, color=ColorPalette.TEXT_SECONDARY),
-                                controls=[
-                                    ft.Markdown(
-                                        thought_text,
-                                        selectable=True,
-                                        extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-                                        code_theme="atom-one-dark"
-                                    )
-                                ],
-                                # initially_expanded=False,
-                                bgcolor=ft.Colors.TRANSPARENT,
-                                collapsed_bgcolor=ft.Colors.TRANSPARENT,
-                                text_color=ColorPalette.TEXT_SECONDARY,
-                                controls_padding=ft.padding.only(left=10, bottom=10),
-                            ),
-                            border=ft.border.all(1, ColorPalette.BORDER),
-                            border_radius=10,
-                            margin=ft.margin.only(top=5, bottom=5)
-                        )
-                    )
-                
-                # C. Content AFTER the think block
-                if post_text:
-                     controls.append(
                         ft.Markdown(
-                            post_text,
+                            pre_text,
                             selectable=True,
                             extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
                             on_tap_link=lambda e: self.page.launch_url(e.data),
                         )
                     )
-            else:
-                # Open thought (Streaming in progress)
-                thought_text = remainder.strip()
-                if thought_text:
-                     controls.append(
-                        ft.Container(
-                            content=ft.ExpansionTile(
-                                title=ft.Text("Thinking...", size=12, italic=True, color=ColorPalette.ACCENT),
-                                controls=[
-                                    ft.Markdown(
-                                        thought_text + " █", # Cursor effect
-                                        selectable=True,
-                                        extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-                                        code_theme="atom-one-dark"
-                                    )
-                                ],
-                                # initially_expanded=True, # Auto-expand while thinking
-                                bgcolor=ft.Colors.TRANSPARENT,
-                                collapsed_bgcolor=ft.Colors.TRANSPARENT,
-                                text_color=ColorPalette.ACCENT,
-                                controls_padding=ft.padding.only(left=10, bottom=10),
-                            ),
-                            border=ft.border.all(1, ColorPalette.ACCENT, ), # opacity=0.5
-                            border_radius=10,
-                            margin=ft.margin.only(top=5, bottom=5)
+                
+                # B. The Think Block
+                # Check if it is closed
+                remainder = text[start_match.end():]
+                end_match = re.search(r'</think>', remainder)
+                
+                if end_match:
+                    # Closed thought
+                    thought_text = remainder[:end_match.start()].strip()
+                    post_text = remainder[end_match.end():].strip()
+                    
+                    if thought_text:
+                        controls.append(
+                            ft.Container(
+                                content=ft.ExpansionTile(
+                                    title=ft.Text("Thought Process", size=12, italic=True, color=ColorPalette.TEXT_SECONDARY),
+                                    controls=[
+                                        ft.Markdown(
+                                            thought_text,
+                                            selectable=True,
+                                            extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                                            code_theme="atom-one-dark"
+                                        )
+                                    ],
+                                    # initially_expanded=False,
+                                    bgcolor=ft.Colors.TRANSPARENT,
+                                    collapsed_bgcolor=ft.Colors.TRANSPARENT,
+                                    text_color=ColorPalette.TEXT_SECONDARY,
+                                    controls_padding=ft.padding.only(left=10, bottom=10),
+                                ),
+                                border=ft.border.all(1, ColorPalette.BORDER),
+                                border_radius=10,
+                                margin=ft.margin.only(top=5, bottom=5)
+                            )
                         )
+                    
+                    # C. Content AFTER the think block
+                    if post_text:
+                         controls.append(
+                            ft.Markdown(
+                                post_text,
+                                selectable=True,
+                                extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                                on_tap_link=lambda e: self.page.launch_url(e.data),
+                            )
+                        )
+                else:
+                    # Open thought (Streaming in progress)
+                    thought_text = remainder.strip()
+                    if thought_text:
+                         controls.append(
+                            ft.Container(
+                                content=ft.ExpansionTile(
+                                    title=ft.Text("Thinking...", size=12, italic=True, color=ColorPalette.ACCENT),
+                                    controls=[
+                                        ft.Markdown(
+                                            thought_text + " █", # Cursor effect
+                                            selectable=True,
+                                            extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                                            code_theme="atom-one-dark"
+                                        )
+                                    ],
+                                    # initially_expanded=True, # Auto-expand while thinking
+                                    bgcolor=ft.Colors.TRANSPARENT,
+                                    collapsed_bgcolor=ft.Colors.TRANSPARENT,
+                                    text_color=ColorPalette.ACCENT,
+                                    controls_padding=ft.padding.only(left=10, bottom=10),
+                                ),
+                                border=ft.border.all(1, ColorPalette.ACCENT), 
+                                border_radius=10,
+                                margin=ft.margin.only(top=5, bottom=5)
+                            )
+                        )
+            
+            else:
+                # No think block, just regular markdown
+                controls.append(
+                    ft.Markdown(
+                        text,
+                        selectable=True,
+                        extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                        on_tap_link=lambda e: self.page.launch_url(e.data),
                     )
-        
-        else:
-            # No think block, just regular markdown
-            controls.append(
-                ft.Markdown(
-                    text,
-                    selectable=True,
-                    extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-                    on_tap_link=lambda e: self.page.launch_url(e.data),
                 )
-            )
+        except Exception as e:
+            print(f"Error parsing message content: {e}")
+            # Fallback to simple Text control
+            controls = [ft.Text(str(text), color=ColorPalette.TEXT_PRIMARY)]
             
         return ft.Column(controls=controls, spacing=5, tight=True)
 
