@@ -1,6 +1,6 @@
 import logging
 from typing import List, Optional
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 from src.core.config import Config
 from src.tools.schemas import SearchResult
 
@@ -30,7 +30,7 @@ TIME_RANGE_MAP = {
 
 def search_web(query: str, category: str = "general", time_range: str = "") -> List[SearchResult]:
     """
-    Searches the web using DuckDuckGo via duckduckgo_search library.
+    Searches the web using DuckDuckGo via 'ddgs' library.
     Matches the signature and behavior of the SearXNG implementation.
     
     Args:
@@ -38,6 +38,14 @@ def search_web(query: str, category: str = "general", time_range: str = "") -> L
         category: 'general', 'news', 'science', etc. (Used for logging/filtering context)
         time_range: 'day', 'week', 'month', 'year' (or empty string)
     """
+    # 1. FAIL-SAFE: Category Validation
+    # If agent guesses a category like 'finance', silently fallback to 'general'
+    # to prevent the agent from getting stuck in an error loop.
+    valid_categories = ["general", "news", "science", "it", "files", "images", "videos"]
+    if category not in valid_categories:
+        logger.warning(f"⚠️ Agent requested invalid category '{category}'. Defaulting to 'general'.")
+        category = "general"
+
     # Resolve time limit
     timelimit = TIME_RANGE_MAP.get(time_range, None)
 
@@ -48,9 +56,11 @@ def search_web(query: str, category: str = "general", time_range: str = "") -> L
         
         # Initialize DDGS context
         with DDGS() as ddgs:
+            ddgs_gen = None
+            
             if category == "news":
                 ddgs_gen = ddgs.news(
-                    keywords=query,
+                    query,
                     region='wt-wt',
                     safesearch='moderate',
                     timelimit=timelimit, # support d, w, m
@@ -58,7 +68,7 @@ def search_web(query: str, category: str = "general", time_range: str = "") -> L
                 )
             elif category == "images":
                 ddgs_gen = ddgs.images(
-                    keywords=query,
+                    query,
                     region='wt-wt',
                     safesearch='moderate',
                     timelimit=timelimit, # support Day, Week, Month
@@ -66,22 +76,23 @@ def search_web(query: str, category: str = "general", time_range: str = "") -> L
                 )
             elif category == "videos":
                  ddgs_gen = ddgs.videos(
-                    keywords=query,
+                    query,
                     region='wt-wt',
                     safesearch='moderate',
                     timelimit=timelimit, # support w, m
                     max_results=Config.MAX_RESULTS
                 )
             else:
-                # General text search
+                # General text search (Covers 'general', 'science', 'it', and fallbacks)
                 ddgs_gen = ddgs.text(
-                    keywords=query,
+                    query,
                     region='wt-wt',
                     safesearch='moderate',
                     timelimit=timelimit,
                     max_results=Config.MAX_RESULTS
                 )
             
+            # Process results if generator is not None
             if ddgs_gen:
                 for item in ddgs_gen:
                     # Normalize fields based on result type
@@ -102,7 +113,8 @@ def search_web(query: str, category: str = "general", time_range: str = "") -> L
                         body = item.get("body", "")
                     
                     # (Optional) JUNK FILTER implementation
-                    if category == "news" and any(x in href.lower() for x in ["instagram.com", "facebook.com", "twitter.com"]):
+                    # Filter out noisy social media login pages often returned in news/web
+                    if any(x in href.lower() for x in ["instagram.com/accounts/login", "facebook.com/login", "twitter.com/login"]):
                         continue
 
                     result = SearchResult(
@@ -111,8 +123,21 @@ def search_web(query: str, category: str = "general", time_range: str = "") -> L
                         content=body,
                         source="duckduckgo"
                     )
-                    logger.info(f'appending web result: {title[:30]}...')
+                    # Only log first few to avoid clutter
+                    if len(results) < 3:
+                        logger.info(f'appending web result: {title[:30]}...')
                     results.append(result)
+
+        # 2. FAIL-SAFE: Empty Results
+        # Return a specific object so the Agent knows it failed to find data
+        if not results:
+            logger.info("⚠️ No results found. returning empty state.")
+            return [SearchResult(
+                title="No Results Found",
+                url="",
+                content=f"The search engine returned 0 results for the query: '{query}'. Please try a different query or broader keywords.",
+                source="system"
+            )]
 
         logger.info(f"✅ Found {len(results)} results.")
         return results
@@ -123,6 +148,6 @@ def search_web(query: str, category: str = "general", time_range: str = "") -> L
         return [SearchResult(
             title="Error",
             url="http://error",
-            content=f"Search failed: {str(e)}",
+            content=f"Search tool failed with error: {str(e)}",
             source="error"
         )]

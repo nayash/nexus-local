@@ -10,11 +10,11 @@ class SearchInput(BaseModel):
     query: str = Field(description="The specific search query.")
     category: Literal["general", "news", "science", "it"] = Field(
         default="general", 
-        description="The type of search. Use 'news' for recent events, 'science' for papers, 'it' for coding/tech, 'general' for facts."
+        description="The type of search. MUST be one of: 'general', 'news', 'science', 'it'. Default to 'general' if unsure."
     )
     time_range: Literal["", "day", "week", "month", "year"] = Field(
         default="",
-        description="Filter results by time. Use 'day' for breaking news, 'year' for recent history."
+        description="Filter by time. MUST be one of: '' (anytime), 'day', 'week', 'month', 'year'. Do NOT use 'now' or 'recent'."
     )
 
 class LocalSearchInput(BaseModel):
@@ -34,7 +34,7 @@ def web_search_tool(query: str, category: str = "general", time_range: str = "")
     
     # 2. Convert Objects to String for the LLM
     if not results_objects:
-        return "No results found."
+        return "No results found. DO NOT TRY AGAIN with the same query. Try a significantly different query or answer based on your knowledge if allowed."
         
     formatted_string = ""
     for res in results_objects:
