@@ -274,9 +274,6 @@ class ChatView(ft.Container):
                 bottom_left=0 if is_user else 15, 
                 bottom_right=15 if is_user else 0
             ),
-            # RESPONSIVENESS: Limit max width so it doesn't span the whole window
-            # max_width=600, 
-            constraints=ft.BoxConstraints(max_width=600),
         )
  
         row_controls = [message_bubble]
