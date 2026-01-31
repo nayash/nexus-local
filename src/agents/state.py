@@ -15,3 +15,4 @@ class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], add] 
     context: str
     sources: Annotated[List[Dict[str, Any]], add]
+    focused_file: str = None  # Optional: File path for focus mode

@@ -9,8 +9,6 @@ from langchain_ollama import ChatOllama
 from app.core.config import Config
 from app.core.user_settings import get_setting
 
-import chainlit as cl
-
 # ... Initialize LLM Helper ...
 def get_llm(model_name: str = "llama3.1"):
     """
@@ -61,6 +59,16 @@ SYSTEM_PROMPT = """You are Nexus, a specialized research assistant with access t
    - Just output the tool call immediately.
 """
 
+
+# Module-level cache for LLM instances to avoid frequent re-initialization
+_llm_cache = {}
+
+def get_cached_llm(model_name: str):
+    if model_name not in _llm_cache:
+        print(f"   ⚙️ Initializing LLM: {model_name}")
+        _llm_cache[model_name] = get_llm(model_name)
+    return _llm_cache[model_name]
+
 def agent_node(state: AgentState):
     print("--- 🤖 NODE: AGENT ---")
     
@@ -69,18 +77,14 @@ def agent_node(state: AgentState):
     
     messages = [SystemMessage(content=SYSTEM_PROMPT)] + trimmed_history
     
-    # 1. Retrieve or Initialize LLM from Session
-    llm_instance = cl.user_session.get("llm_instance")
-    
-    if not llm_instance:
-        # Fallback if session is empty (e.g. first run or restart)
-        current_model = get_setting("model_name", "llama3.1")
-        print(f"   ⚙️ Initializing LLM: {current_model}")
-        llm_instance = get_llm(current_model)
-        cl.user_session.set("llm_instance", llm_instance)
+    # 1. Retrieve LLM based on UserSettings
+    current_model = get_setting("model_name", "llama3.1")
+    llm_instance = get_cached_llm(current_model)
         
     # --- FOCUS MODE CHECK ---
-    focused_file = cl.user_session.get("focused_file")
+    # NOW: Read from state, not session
+    focused_file = state.get("focused_file")
+    
     if focused_file:
         print(f"   🎯 FOCUS MODE ACTIVE: {focused_file}")
         focus_instruction = (
