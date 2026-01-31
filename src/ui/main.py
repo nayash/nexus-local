@@ -14,6 +14,9 @@ def main(page: ft.Page):
     page.window_min_width = 800
     page.window_min_height = 600
 
+    # Validating initial page state
+    page.update()
+
     if page.data is None:
         page.data = {}
 
@@ -27,6 +30,7 @@ def main(page: ft.Page):
         page.data["web_search_enabled"] = result.web_search_enabled
         page.data["model_name"] = get_setting("model_name", "llama3.1")
         page.add(app)
+        page.update()
 
     # Initialize with StartupView
     page.add(StartupView(page, on_success=on_startup_success, is_local=True))
