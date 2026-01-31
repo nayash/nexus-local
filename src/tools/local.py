@@ -1,6 +1,6 @@
 from langchain_ollama import OllamaEmbeddings
 from src.core.config import Config
-from src.rag.storage import get_table
+from src.rag.storage import get_table, list_tables
 from src.tools.schemas import SearchResult
 from typing import List
 import os
@@ -17,43 +17,76 @@ def search_local(query: str, file_filter: str = None) -> List[SearchResult]:
         query: The search text.
         file_filter: Optional absolute path to restrict search to a specific file.
     """
-    tbl = get_table("documents")
-    if not tbl:
-        return [SearchResult(title="System", url="local", content="No local documents found. Please ingest files first.")]
-
-    # 1. Embed the query
-    query_vector = embeddings_model.embed_query(query)
-
-    # 2. Search DB (Vector Search)
-    # limit=3 for global search, limit=15 for focused search to provide deep context
-    result_limit = 15 if file_filter else 3
-    search_builder = tbl.search(query_vector).limit(result_limit)
+    
+    # 1. Determine which tables to search
+    tables_to_search = []
+    
+    # If focused file, we typically assume it is in the 'documents' table
+    # (since single file ingest goes there). 
+    # BUT, if it was part of a folder ingest, it might be elsewhere.
+    # For MVP simplicity, based on our rules:
+    # - Single files -> 'documents'
+    # - Folder files -> 'folder_xxx'
+    # We will search ALL tables if file_filter is set too, but filter by source.
+    # Or optimize: assume user manually attached it -> it went to 'documents'.
+    # Let's stick to the prompt requirement: 
+    # "If user clicks on attachment icon ... ingest in 'documents' table ... and answer from document"
+    # So focused file = 'documents' table.
     
     if file_filter:
-        print(f"--- 🎯 FOCUSED SEARCH: '{file_filter}' ---")
-        search_builder = search_builder.where(f"source = '{file_filter}'")
+         tables_to_search = ["documents"]
+    else:
+         tables_to_search = list_tables()
+         
+    if not tables_to_search:
+        return [SearchResult(title="System", url="local", content="No local knowledge found. Please ingest files or folders first.")]
+
+    # 2. Embed the query
+    query_vector = embeddings_model.embed_query(query)
+    
+    all_results = []
+    
+    for table_name in tables_to_search:
+        tbl = get_table(table_name)
+        if not tbl:
+            continue
+            
+        # limit=3 for global search per table (we will aggregate), limit=10 for focused
+        result_limit = 10 if file_filter else 3 
         
-    results = search_builder.to_list()
+        search_builder = tbl.search(query_vector).limit(result_limit)
+        
+        if file_filter:
+            print(f"--- 🎯 FOCUSED SEARCH in {table_name}: '{file_filter}' ---")
+            search_builder = search_builder.where(f"source = '{file_filter}'")
+            
+        try:
+             results = search_builder.to_list()
+             for r in results:
+                 r["_table"] = table_name # Track origin
+                 all_results.append(r)
+        except Exception as e:
+            print(f"Error searching table {table_name}: {e}")
+
+    # 3. Sort & Filter Aggregate Results
+    # Sort by distance (ASC)
+    all_results.sort(key=lambda x: x.get("_distance", 1.0))
     
     filtered_results = []
     # THRESHOLD CONFIG
     # In LanceDB/L2 Distance: LOWER score is BETTER (0 = exact match)
     # A score > 0.4 usually implies "vaguely related but not relevant"
     MAX_DISTANCE = 0.8
-
-    for r in results:
+    global_limit = 15 if file_filter else 5 # Max total chunks to return
+    
+    for r in all_results[:global_limit]:
         score = r.get("_distance", 1.0)
-        
-        # DEBUG: Print scores to tune this value
-        print(f"DEBUG: Found '{r['source']}' with distance: {score}")
-        
-        # ROBUSTNESS FIX: If user is focusing on a specific file, we skip the distance check.
-        # We assume the user knows this file is relevant.
+        print(f"DEBUG: Found '{r['source']}' in table '{r.get('_table')}' with distance: {score}")
+
         if file_filter or score <= MAX_DISTANCE:
-            # Only keep good matches (or all if focused)
             filtered_results.append(
                 SearchResult(
-                    title=f'Local File: {os.path.basename(r["source"])}',
+                    title=f'Local File ({r.get("_table", "doc")}): {os.path.basename(r["source"])}',
                     url=r["source"], 
                     content=r["text"],
                     source="local"

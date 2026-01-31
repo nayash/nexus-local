@@ -53,15 +53,24 @@ class ChatView(ft.Container):
             border_radius=10,
             on_select=self.on_model_change
         )
+        
+        self.focused_file_indicator = ft.Container(visible=False, height=0)
 
         return ft.Column(
             controls=[
                 self.chat_history,
+                # Focused File Indicator
+                self.focused_file_indicator,
                 ft.Container(
                     content=ft.Column([
                         ft.Row(
                             controls=[
-                                ft.IconButton(ft.Icons.ATTACH_FILE, icon_color=ColorPalette.TEXT_SECONDARY, tooltip="Attach File"),
+                                ft.IconButton(
+                                    ft.Icons.ATTACH_FILE, 
+                                    icon_color=ColorPalette.TEXT_SECONDARY, 
+                                    tooltip="Attach File (Focus Mode)",
+                                    on_click=self.handle_attach_file
+                                ),
                                 self.input_field,
                                 ft.IconButton(
                                     ft.Icons.SEND_ROUNDED, 
@@ -88,6 +97,57 @@ class ChatView(ft.Container):
             expand=True,
             spacing=0
         )
+    
+    async def handle_attach_file(self, e):
+        try:
+            files = await ft.FilePicker().pick_files(allow_multiple=False)
+            if files:
+                file_path = files[0].path
+                # Show loading snackbar
+                self.page.show_dialog(ft.SnackBar(content=ft.Text(f"Focusing on {files[0].name}...")))
+                
+                # Ingest quietly
+                from src.rag.ingestion import ingest_file
+                # Note: We must import inside to avoid circular deps if any, or just standard import
+                
+                success, msg, _ = ingest_file(file_path, table_name="documents")
+                
+                if success:
+                    self.page.data["focused_file"] = file_path
+                    self.update_focus_ui(file_path)
+                    self.page.show_dialog(ft.SnackBar(content=ft.Text("Focused! Agent will only search this file."), bgcolor="green"))
+                else:
+                    self.page.show_dialog(ft.SnackBar(content=ft.Text(f"Failed to ingest: {msg}"), bgcolor="red"))
+        except Exception as ex:
+             # self.page.open(ft.SnackBar(content=ft.Text(f"Error: {ex}"), bgcolor="red"))
+             print(f"Error in attach: {ex}")
+
+    def clear_focus(self, e):
+        self.page.data["focused_file"] = None
+        self.update_focus_ui(None)
+        self.page.show_dialog(ft.SnackBar(content=ft.Text("Focus cleared. Searching all knowledge.")))
+
+    def update_focus_ui(self, file_path):
+        if file_path:
+             import os
+             filename = os.path.basename(file_path)
+             self.focused_file_indicator.content = ft.Row(
+                 [
+                     ft.Icon(ft.Icons.ATTACH_FILE, size=16, color=ColorPalette.ACCENT),
+                     ft.Text(f"Focused: {filename}", color=ColorPalette.ACCENT, size=12, weight=ft.FontWeight.BOLD),
+                     ft.IconButton(ft.Icons.CLOSE, scale=0.5, icon_color=ColorPalette.TEXT_SECONDARY, on_click=self.clear_focus, tooltip="Clear Focus")
+                 ],
+                 alignment=ft.MainAxisAlignment.CENTER
+             )
+             self.focused_file_indicator.visible = True
+             self.focused_file_indicator.height = 30
+             self.focused_file_indicator.bgcolor = ColorPalette.BG_SECONDARY
+             self.focused_file_indicator.border = ft.border.all(1, ColorPalette.ACCENT)
+        else:
+             self.focused_file_indicator.visible = False
+             self.focused_file_indicator.height = 0
+        
+        self.focused_file_indicator.update()
     
     async def trigger_send(self, e):
         """Wrapper to handle async send event"""

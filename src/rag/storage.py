@@ -21,3 +21,10 @@ def get_table(table_name="documents"):
         return db.open_table(table_name)
     except FileNotFoundError:
         return None  # Table doesn't exist yet
+
+def list_tables():
+    """Returns a list of all table names in the database."""
+    db = get_db_connection()
+    tables = db.table_names()
+    print(f'List of tables: {tables}')
+    return tables
