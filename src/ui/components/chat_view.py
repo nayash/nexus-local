@@ -2,6 +2,7 @@ import flet as ft
 from styles import ColorPalette, TextStyles
 from src.core.config import Config
 from src.core.utils import run_ollama_pull
+from src.core.user_settings import save_setting, get_setting
 
 class ChatView(ft.Container):
     def __init__(self):
@@ -96,7 +97,7 @@ class ChatView(ft.Container):
         progress_snack = ft.SnackBar(
             content=status_text,
             show_close_icon=True,
-            duration=300000  # 5 minutes (prevents auto-hide during long downloads)
+            duration=1200000  # 20 minutes (prevents auto-hide during long downloads)
         )
 
         # 3. Open it using the new Flet 0.80+ API
@@ -104,6 +105,7 @@ class ChatView(ft.Container):
 
         # 4. Define the callback to update the Text control directly
         async def progress_callback(msg: str):
+            print(f'Progress: {msg}')
             status_text.value = msg
             status_text.update() # Update only the text, not the whole page
 
@@ -111,6 +113,10 @@ class ChatView(ft.Container):
         try:
             # Ensure run_ollama_pull is imported and is async
             result_msg = await run_ollama_pull(model_name, progress_callback)
+            print(f'Result of model selection: {result_msg}')
+            if "ready" in result_msg:
+                self.page.data["model_name"] = model_name
+                save_setting("model_name", model_name)
             status_text.value = result_msg
             status_text.color = "green"
         except Exception as ex:

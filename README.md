@@ -128,4 +128,17 @@ nexus-local/
 
 
 ### Run instruction for Flet:
+#!/usr/bin/env bash
+set -euo pipefail
+
+############################################
+current project init commands
+############################################
+echo "changing directory"
+cd Documents/projects/ml_projects/nexus-local
+
+echo "activating venv"
+source .flet-venv/bin/activate
+
+echo "starting Flet application"
 PYTHONPATH=. flet run --recursive src/ui/main.py

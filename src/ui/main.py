@@ -3,6 +3,7 @@ from styles import ColorPalette
 from app_layout import AppLayout
 from startup_view import StartupView
 from src.core.startup import StartupResult
+from src.core.user_settings import get_setting, save_setting
 
 def main(page: ft.Page):
     # Page Configuration
@@ -24,6 +25,7 @@ def main(page: ft.Page):
         print(f'Web search enabled: {result.web_search_enabled}')
         # page.client_storage.set("web_search_enabled", result.web_search_enabled)
         page.data["web_search_enabled"] = result.web_search_enabled
+        page.data["model_name"] = get_setting("model_name", "llama3.1")
         page.add(app)
 
     # Initialize with StartupView
