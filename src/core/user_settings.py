@@ -9,8 +9,9 @@ def load_settings():
         return {}
     try:
         with open(CONFIG_FILE, "r") as f:
-            print(f'loaded settings: {json.load(f)}')
-            return json.load(f)
+            data = json.load(f)
+            print(f'loaded settings: {data}')
+            return data
     except Exception:
         return {}
 
@@ -22,4 +23,5 @@ def save_setting(key, value):
 
 def get_setting(key, default=None):
     settings = load_settings()
+    print(f'settings for key {key}: {settings.get(key, default)}')
     return settings.get(key, default)

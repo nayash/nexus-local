@@ -38,10 +38,10 @@ class ChatView(ft.Container):
             border_radius=20,
             content_padding=15
         )
-
+        print(f'model_name to be made default: {get_setting("model_name", Config.SUPPORTED_MODELS[0] if Config.SUPPORTED_MODELS else None)}')
         model_dropdown = ft.Dropdown(
             options=[ft.dropdown.Option(model) for model in Config.SUPPORTED_MODELS],
-            value=Config.SUPPORTED_MODELS[0] if Config.SUPPORTED_MODELS else None,
+            value=get_setting("model_name", Config.SUPPORTED_MODELS[0] if Config.SUPPORTED_MODELS else None),
             width=150,
             text_style=ft.TextStyle(color=ColorPalette.TEXT_PRIMARY, size=12),
             bgcolor=ColorPalette.BG_SECONDARY,
