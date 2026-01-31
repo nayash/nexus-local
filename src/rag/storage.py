@@ -1,6 +1,6 @@
 import lancedb
 import os
-from app.core.config import Config
+from src.core.config import Config
 
 # Define where the DB lives on your disk
 DB_PATH = Config.LANCEDB_PATH

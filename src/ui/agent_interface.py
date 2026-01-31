@@ -1,0 +1,78 @@
+import asyncio
+from langchain_core.messages import HumanMessage, AIMessage
+from src.agents.graph import build_graph
+
+
+# Global cache for the compiled graph
+_cached_graph = None
+
+def get_graph():
+    global _cached_graph
+    if _cached_graph is None:
+        print("--- 🏗️ BUILDING GRAPH (Singleton) ---")
+        _cached_graph = build_graph()
+    return _cached_graph
+
+async def run_agent_stream(query: str, chat_history: list, context: dict = None):
+    """
+    Runs the agent graph and yields streaming tokens/events.
+    
+    Args:
+        query: The user's latest question.
+        chat_history: List of previous messages (formatted for LangChain if needed, 
+                      or we can just append the new query here).
+        context: Dict containing 'focused_file' or other UI state.
+    
+    Yields:
+        String chunks of the agent's response.
+    """
+    if context is None:
+        context = {}
+        
+    # 1. Initialize Graph (Cached)
+    graph = get_graph()
+    
+    # 2. Prepare Input State
+    # For now, we assume simple append logic. 
+    # In a real app, you'd convert the Flet chat_history to LangChain messages.
+    # Here we just pass the new message, relying on the Graph's state management 
+    # (if it had persistence, which local memory graph usually doesn't across runs without a checkpointer).
+    # Since we don't have a DB checkpointer yet, we might need to pass the full history.
+    # For MVP, let's just pass the User query.
+    
+    inputs = {
+        "messages": [HumanMessage(content=query)],
+        "focused_file": context.get("focused_file"),
+        # "model_name": context.get("model_name") # Now handled via UserSettings in nodes.py, but can be passed if we want overrides.
+    }
+    
+    print(f"--- 🚀 LAUNCHING AGENT with query: {query} ---")
+    
+    # 3. Stream Events
+    # We use 'astream_events' to get granular token updates if supported, 
+    # or just 'stream' for node updates. 
+    # For 'nodes.py' which returns a full message, normal stream gives node outputs.
+    # To get token streaming from the LLM within the node, we need to ensure the LLM is invoked with stream=True 
+    # and we capture the callback or use astream_events with v2.
+    
+    # Attempting to use astream just for the final response for now.
+    async for event in graph.astream(inputs):
+        # The 'agent' node returns {"messages": [AIMessage(...)]}
+        # We need to extract the content.
+        # Note: This yields AFTER the node finishes. 
+        # For real-time token streaming, we need 'astream_events' filtering for 'on_chat_model_stream'.
+        
+        # Let's try to just yield the final text first for reliability, then upgrade to token streaming.
+        for value in event.values():
+            if "messages" in value:
+                last_msg = value["messages"][-1]
+                if isinstance(last_msg, AIMessage):
+                    yield last_msg.content
+
+    # TODO: Upgrade to True Streaming
+    # async for event in graph.astream_events(inputs, version="v1"):
+    #     kind = event["event"]
+    #     if kind == "on_chat_model_stream":
+    #         content = event["data"]["chunk"].content
+    #         if content:
+    #             yield content

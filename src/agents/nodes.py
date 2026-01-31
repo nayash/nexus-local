@@ -2,12 +2,12 @@ import json
 import re
 from langchain_core.messages import SystemMessage, AIMessage
 from langchain_core.messages.tool import ToolCall
-from app.agents.state import AgentState
-from app.agents.utils import trim_messages
-from app.tools.registry import TOOLS
+from src.agents.state import AgentState
+from src.agents.utils import trim_messages
+from src.tools.registry import TOOLS
 from langchain_ollama import ChatOllama
-from app.core.config import Config
-from app.core.user_settings import get_setting
+from src.core.config import Config
+from src.core.user_settings import get_setting
 
 # ... Initialize LLM Helper ...
 def get_llm(model_name: str = "llama3.1"):

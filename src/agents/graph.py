@@ -1,11 +1,11 @@
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode, tools_condition
 
-from app.agents.state import AgentState
-from app.agents.nodes_old import web_search_node, generate_node, local_search_node
-from app.agents.nodes import agent_node
-from app.agents.router import route_question
-from app.tools.registry import TOOLS
+from src.agents.state import AgentState
+# from src.agents.nodes import web_search_node, generate_node, local_search_node
+from src.agents.nodes import agent_node
+from src.agents.router import route_question
+from src.tools.registry import TOOLS
 
 # def build_graph_old():
 #     """

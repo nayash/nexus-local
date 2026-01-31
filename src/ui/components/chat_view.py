@@ -1,8 +1,10 @@
+import asyncio
 import flet as ft
 from styles import ColorPalette, TextStyles
 from src.core.config import Config
 from src.core.utils import run_ollama_pull
 from src.core.user_settings import save_setting, get_setting
+from src.ui.agent_interface import run_agent_stream
 
 class ChatView(ft.Container):
     def __init__(self):
@@ -11,6 +13,7 @@ class ChatView(ft.Container):
         self.bgcolor = ColorPalette.BG_PRIMARY
         self.padding = 0  # Padding handling inside
         self.content = self.build_content()
+        self.is_processing = False
 
     def build_content(self):
         self.chat_history = ft.ListView(
@@ -20,10 +23,9 @@ class ChatView(ft.Container):
             auto_scroll=True
         )
         
-        # Add some dummy messages for UI visualization
-        self.add_message("Hello! I am Nexus. How can I help you today?", is_user=False)
-        self.add_message("Can you summarize the 'Project Phoenix' PDF?", is_user=True)
-        self.add_message("Certainly. Parsing local files... The 'Project Phoenix' document outlines the Q3 migration strategy...", is_user=False)
+        # Add some dummy messages if history is empty
+        # self.add_message("Hello! I am Nexus. How can I help you today?", is_user=False)
+        self.add_message("Nexus is ready. Ask me anything.", is_user=False)
 
         self.input_field = ft.TextField(
             hint_text="Ask anything...",
@@ -36,7 +38,8 @@ class ChatView(ft.Container):
             max_lines=5,
             expand=True,
             border_radius=20,
-            content_padding=15
+            content_padding=15,
+            on_submit=self.trigger_send # Bind Enter key
         )
         print(f'model_name to be made default: {get_setting("model_name", Config.SUPPORTED_MODELS[0] if Config.SUPPORTED_MODELS else None)}')
         model_dropdown = ft.Dropdown(
@@ -59,7 +62,12 @@ class ChatView(ft.Container):
                             controls=[
                                 ft.IconButton(ft.Icons.ATTACH_FILE, icon_color=ColorPalette.TEXT_SECONDARY, tooltip="Attach File"),
                                 self.input_field,
-                                ft.IconButton(ft.Icons.SEND_ROUNDED, icon_color=ColorPalette.ACCENT, tooltip="Send"),
+                                ft.IconButton(
+                                    ft.Icons.SEND_ROUNDED, 
+                                    icon_color=ColorPalette.ACCENT, 
+                                    tooltip="Send",
+                                    on_click=self.trigger_send
+                                ),
                             ],
                             alignment=ft.MainAxisAlignment.CENTER,
                         ),
@@ -79,6 +87,52 @@ class ChatView(ft.Container):
             expand=True,
             spacing=0
         )
+    
+    async def trigger_send(self, e):
+        """Wrapper to handle async send event"""
+        if self.is_processing:
+            return
+        await self.send_message()
+
+    async def send_message(self):
+        query = self.input_field.value
+        if not query or not query.strip():
+            return
+
+        self.is_processing = True
+        self.input_field.value = ""
+        self.input_field.update()
+        
+        # 1. Show User Message
+        self.add_message(query, is_user=True)
+        
+        # 2. Show "Thinking" Placeholder
+        thinking_text = "Thinking..."
+        bot_message_control = self.add_message(thinking_text, is_user=False)
+        bot_text_control = bot_message_control.content
+        
+        # 3. Stream Response
+        full_response = ""
+        try:
+            # Prepare context (include focused_file if available in page.data)
+            context = {
+                "focused_file": self.page.data.get("focused_file")
+            }
+            
+            async for chunk in run_agent_stream(query, [], context):
+                full_response = chunk
+                # For now, run_agent_stream yields the full final text node by node.
+                # Once we implement real streaming, we'd append 'chunk' to full_response.
+                # Since we are getting the final message content directly now:
+                bot_text_control.value = full_response
+                bot_text_control.update()
+                
+        except Exception as ex:
+            bot_text_control.value = f"Error: {str(ex)}"
+            bot_text_control.color = ColorPalette.ERROR
+            bot_text_control.update()
+        
+        self.is_processing = False
 
     async def on_model_change(self, e):
         """
@@ -89,26 +143,26 @@ class ChatView(ft.Container):
         model_name = e.control.value
         if not model_name:
             return
-
+ 
         # 1. Create a Text control we can update specifically
         status_text = ft.Text(f"Checking status of {model_name}...")
-
+ 
         # 2. Create the SnackBar (Set long duration so it stays during download)
         progress_snack = ft.SnackBar(
             content=status_text,
             show_close_icon=True,
             duration=1200000  # 20 minutes (prevents auto-hide during long downloads)
         )
-
+ 
         # 3. Open it using the new Flet 0.80+ API
         self.page.show_dialog(progress_snack)
-
+ 
         # 4. Define the callback to update the Text control directly
         async def progress_callback(msg: str):
             print(f'Progress: {msg}')
             status_text.value = msg
             status_text.update() # Update only the text, not the whole page
-
+ 
         # 5. Run the pull logic
         try:
             # Ensure run_ollama_pull is imported and is async
@@ -125,7 +179,7 @@ class ChatView(ft.Container):
         
         # Final UI refresh for the text color change
         status_text.update()
-
+ 
     def add_message(self, text, is_user):
         alignment = ft.MainAxisAlignment.END if is_user else ft.MainAxisAlignment.START
         bg_color = ColorPalette.ACCENT if is_user else ColorPalette.BG_SECONDARY
@@ -136,7 +190,7 @@ class ChatView(ft.Container):
             bgcolor=ColorPalette.BORDER,
             radius=16
         )
-
+ 
         message_bubble = ft.Container(
             content=ft.Text(text, color=text_color, size=14),
             bgcolor=bg_color,
@@ -148,7 +202,7 @@ class ChatView(ft.Container):
             ),
             width=None, # Auto width
         )
-
+ 
         row_controls = [message_bubble]
         if not is_user:
             row_controls.insert(0, avatar)
@@ -160,3 +214,8 @@ class ChatView(ft.Container):
                 vertical_alignment=ft.CrossAxisAlignment.START,
             )
         )
+        try:
+            self.chat_history.update()
+        except RuntimeError:
+            pass
+        return message_bubble  # Return container to allow updating text later

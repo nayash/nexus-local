@@ -3,8 +3,8 @@ from langchain_ollama import OllamaEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 
-from app.core.config import Config
-from app.rag.storage import get_db_connection, get_table
+from src.core.config import Config
+from src.rag.storage import get_db_connection, get_table
 
 # Initialize the lightweight embedding model
 embeddings_model = OllamaEmbeddings(

@@ -1,8 +1,8 @@
 import requests
 import logging
 from typing import List
-from app.core.config import Config
-from app.tools.schemas import SearchResult
+from src.core.config import Config
+from src.tools.schemas import SearchResult
 from langchain_community.utilities import SearxSearchWrapper
 
 # Configure structured logging

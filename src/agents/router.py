@@ -1,7 +1,7 @@
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from app.core.config import Config
+from src.core.config import Config
 from src.core.user_settings import get_setting, save_setting
 
 # Initialize a lightweight LLM instance for routing
