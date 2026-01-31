@@ -5,10 +5,16 @@ from src.core.config import Config
 from src.core.utils import run_ollama_pull
 from src.core.user_settings import save_setting, get_setting
 from src.ui.agent_interface import run_agent_stream
+from src.core.database import ChatRepository
+import threading
 
 class ChatView(ft.Container):
-    def __init__(self):
+    def __init__(self, on_update=None):
         super().__init__()
+        self.repo = ChatRepository()
+        self.current_chat_id = None
+        self.on_update = on_update
+        
         self.expand = True
         self.bgcolor = ColorPalette.BG_PRIMARY
         self.padding = 0  # Padding handling inside
@@ -98,6 +104,59 @@ class ChatView(ft.Container):
             spacing=0
         )
     
+
+    def start_new_chat(self):
+        self.current_chat_id = None
+        self.chat_history.controls.clear()
+        self.add_message("Nexus is ready. Ask me anything.", is_user=False)
+        self.chat_history.update()
+
+    def load_chat(self, chat_id):
+        self.current_chat_id = chat_id
+        self.chat_history.controls.clear()
+        
+        try:
+            messages = self.repo.get_chat_history(chat_id)
+            if not messages:
+                self.add_message("Start of conversation.", is_user=False)
+            
+            for msg in messages:
+                self.add_message(msg["content"], is_user=(msg["role"] == "user"))
+        except Exception as e:
+            self.page.show_dialog(ft.SnackBar(content=ft.Text(f"Failed to load chat: {e}")))
+            
+        self.chat_history.update()
+
+    def _generate_title_async(self, chat_id, query):
+        """
+        Background task to generate a short title for the chat using the LLM.
+        """
+        try:
+            from src.agents.nodes import get_cached_llm
+            from langchain_core.messages import SystemMessage, HumanMessage
+            
+            # Use a fast model if available, or just the current one
+            model_name = get_setting("model_name", "llama3.1")
+            llm = get_cached_llm(model_name)
+            
+            prompt = [
+                SystemMessage(content="You are a helpful assistant. Generate a short, concise title (max 4 words) for the following query. Do not use quotes."),
+                HumanMessage(content=query)
+            ]
+            
+            response = llm.invoke(prompt)
+            title = response.content.strip().replace('"', '')
+            
+            # Update DB
+            self.repo.update_chat_title(chat_id, title)
+            print(f"Chat {chat_id} renamed to: {title}")
+            
+            if self.on_update:
+                self.on_update()
+            
+        except Exception as e:
+            print(f"Error generating title: {e}")
+    
     async def handle_attach_file(self, e):
         try:
             files = await ft.FilePicker().pick_files(allow_multiple=False)
@@ -164,15 +223,26 @@ class ChatView(ft.Container):
         self.input_field.value = ""
         self.input_field.update()
         
+        # --- Persistence Start ---
+        is_new_chat = False
+        if not self.current_chat_id:
+            self.current_chat_id = self.repo.create_chat(title="New Chat")
+            is_new_chat = True
+        
+        # Save User Message
+        self.repo.add_message(self.current_chat_id, "user", query)
+        
+        # Trigger renaming if new chat
+        if is_new_chat:
+            threading.Thread(target=self._generate_title_async, args=(self.current_chat_id, query), daemon=True).start()
+        # --- Persistence End ---
+
         # 1. Show User Message
         self.add_message(query, is_user=True)
         
         # 2. Show "Thinking" Placeholder
         thinking_text = "Thinking..."
         bot_message_control = self.add_message(thinking_text, is_user=False)
-        # We need to find the specific markdown/text control inside the container to update it
-        # However, with the new complex structure (Markdown + ExpansionTile), 
-        # it's better to update the whole container content once the response arrives.
         
         # 3. Stream Response
         full_response = ""
@@ -187,6 +257,9 @@ class ChatView(ft.Container):
                 # Re-parse and update the entire content of the bubble
                 bot_message_control.content = self._parse_message_content(full_response)
                 bot_message_control.update()
+            
+            # --- Persistence of Bot Response ---
+            self.repo.add_message(self.current_chat_id, "assistant", full_response)
                 
         except Exception as ex:
             bot_message_control.content = ft.Text(f"Error: {str(ex)}", color=ColorPalette.ERROR)

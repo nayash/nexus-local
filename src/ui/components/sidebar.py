@@ -1,12 +1,15 @@
 import flet as ft
 from styles import ColorPalette, TextStyles
+from src.core.database import ChatRepository
 
 class Sidebar(ft.Container):
-    def __init__(self, page: ft.Page, on_settings_click, on_new_chat_click):
+    def __init__(self, page: ft.Page, on_settings_click, on_new_chat_click, on_chat_selected):
         super().__init__()
         self.app_page = page
         self.on_settings_click = on_settings_click
         self.on_new_chat_click = on_new_chat_click
+        self.on_chat_selected = on_chat_selected
+        self.repo = ChatRepository()
         
         self.width = 250
         self.bgcolor = ColorPalette.BG_SECONDARY
@@ -14,6 +17,9 @@ class Sidebar(ft.Container):
         self.content = self.build_content()
 
     def build_content(self):
+        self.chat_list = ft.Column(spacing=5, scroll=ft.ScrollMode.AUTO)
+        self.refresh_chats()
+        
         return ft.Column(
             controls=[
                 ft.Container(
@@ -24,22 +30,27 @@ class Sidebar(ft.Container):
                 ft.Divider(color=ColorPalette.BORDER),
                 ft.Text("Recent Chats", style=TextStyles.label_small()),
                 ft.Container(
-                    content=ft.Column(
-                        controls=[
-                            self.create_history_item("Project Phoenix Research"),
-                            self.create_history_item("React Migration Plan"),
-                            self.create_history_item("Q4 Financials"),
-                        ],
-                        spacing=5
-                    ),
+                    content=self.chat_list,
                     expand=True  # Fill available vertical space
                 ),
                 ft.Divider(color=ColorPalette.BORDER),
-                self.create_action_button("Clear History", ft.Icons.DELETE_OUTLINE),
+                self.create_action_button("Clear History", ft.Icons.DELETE_OUTLINE, on_click=self.handle_clear_history),
                 self.create_action_button("Settings", ft.Icons.SETTINGS, on_click=self.on_settings_click),
             ],
             expand=True
         )
+
+    def refresh_chats(self):
+        self.chat_list.controls.clear()
+        chats = self.repo.get_recent_chats()
+        for chat in chats:
+            self.chat_list.controls.append(
+                self.create_history_item(chat["title"], chat["id"])
+            )
+        try:
+             self.chat_list.update()
+        except:
+             pass
 
     def create_new_chat_button(self):
         return ft.Container(
@@ -57,13 +68,15 @@ class Sidebar(ft.Container):
             ink=True,
         )
 
-    def create_history_item(self, title):
+    def create_history_item(self, title, chat_id):
         return ft.Container(
-            content=ft.Text(title, color=ColorPalette.TEXT_SECONDARY, size=13, no_wrap=True),
+            content=ft.Text(title, color=ColorPalette.TEXT_SECONDARY, size=13, no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS),
             padding=10,
             border_radius=5,
             on_hover=lambda e: self.toggle_hover(e),
-            ink=True
+            on_click=lambda _: self.on_chat_selected(chat_id),
+            ink=True,
+            data=chat_id
         )
 
     def create_action_button(self, text, icon, on_click=None):
@@ -79,6 +92,12 @@ class Sidebar(ft.Container):
             on_click=on_click,
             ink=True
         )
+    
+    def handle_clear_history(self, e):
+        # MVP: Should probably have a cleanup in repo
+        # For now, just re-init DB or delete logic
+        # self.repo.delete_all() # Not implemented yet
+        pass
 
     def toggle_hover(self, e):
         e.control.bgcolor = ColorPalette.BORDER if e.data == "true" else None

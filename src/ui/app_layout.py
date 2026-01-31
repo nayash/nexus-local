@@ -14,9 +14,12 @@ class AppLayout(ft.Row):
         self.sidebar = Sidebar(
             page, 
             on_settings_click=self.show_settings, 
-            on_new_chat_click=self.show_chat
+            on_new_chat_click=self.handle_new_chat,
+            on_chat_selected=self.handle_chat_history_click
         )
-        self.chat_view = ChatView()
+        
+        # Pass callback to refresh sidebar when chat title changes
+        self.chat_view = ChatView(on_update=lambda: self.sidebar.refresh_chats())
         self.settings_view = SettingsView(on_back_click=self.show_chat)
 
         # Initially show Chat View
@@ -33,5 +36,16 @@ class AppLayout(ft.Row):
         self.update()
 
     def show_chat(self, e=None):
+        self.active_view = self.chat_view # Ensure correct reference
         self.controls[-1] = self.chat_view
         self.update()
+
+    def handle_new_chat(self):
+        """Resets the chat view for a fresh conversation."""
+        self.chat_view.start_new_chat()
+        self.show_chat()
+    
+    def handle_chat_history_click(self, chat_id):
+        """Loads a previous chat."""
+        self.chat_view.load_chat(chat_id)
+        self.show_chat()

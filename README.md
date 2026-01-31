@@ -102,6 +102,7 @@ These features leverage the **Native Desktop** advantage of Nexus Local.
         - *Data Entry:* Open a PDF invoice side-by-side with Excel. *Highlight invoice -> Hotkey -> "Extract the table into CSV format."*
         - *Debugging:* *Highlight error message in terminal -> Hotkey -> "Explain this error."*
     * *The "Gap":* Zero-latency, zero-privacy-risk visual analysis. It feels like an OS feature, not a chatbot website.
+9. **Routine job to vectorize chat histories for future RAG**
 
 ---
 
