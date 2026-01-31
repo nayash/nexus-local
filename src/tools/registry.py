@@ -21,7 +21,7 @@ class LocalSearchInput(BaseModel):
     query: str = Field(description="The specific search query.")
     file_filter: Optional[str] = Field(
         default=None,
-        description="The absolute path of a specific file to search within. Use this ONLY when the user is focusing on a specific document."
+        description="The absolute path of a specific file to search within. MUST be a valid, existing path provided in the context. DO NOT hallucinate or guess paths. If no file is focused, leave as None."
     )
 
 @tool(args_schema=SearchInput)
@@ -49,6 +49,7 @@ def local_search_tool(query: str, file_filter: str = None):
     Search the user's local private documents and files.
     Use this for questions about "Nexus", "Project", or personal data.
     """
+    print(f'calling search_local with query: {query} and file_filter: {file_filter}')
     results = search_local(query, file_filter)
     # Increase context budget for focused search to 15,000 chars
     context_budget = 15000 if file_filter else 5000

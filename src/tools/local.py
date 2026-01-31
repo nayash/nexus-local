@@ -19,6 +19,12 @@ def search_local(query: str, file_filter: str = None) -> List[SearchResult]:
     """
     
     # 1. Determine which tables to search
+    
+    # Validation: Ensure focused file actually exists
+    if file_filter and not os.path.exists(file_filter):
+        print(f"⚠️ WARNING: Intent to focus on '{file_filter}' ignored because file does not exist.")
+        file_filter = None
+
     tables_to_search = []
     
     # If focused file, we typically assume it is in the 'documents' table
@@ -52,7 +58,7 @@ def search_local(query: str, file_filter: str = None) -> List[SearchResult]:
             continue
             
         # limit=3 for global search per table (we will aggregate), limit=10 for focused
-        result_limit = 10 if file_filter else 3 
+        result_limit = 10 if file_filter else 5 
         
         search_builder = tbl.search(query_vector).limit(result_limit)
         
