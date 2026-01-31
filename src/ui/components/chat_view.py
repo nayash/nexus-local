@@ -123,7 +123,7 @@ class ChatView(ft.Container):
             }
             
             async for chunk in run_agent_stream(query, [], context):
-                full_response = chunk
+                full_response += chunk
                 # Re-parse and update the entire content of the bubble
                 bot_message_control.content = self._parse_message_content(full_response)
                 bot_message_control.update()
@@ -138,17 +138,21 @@ class ChatView(ft.Container):
         """
         Parses message text to handle <think>...</think> tags.
         Returns a Column of controls (Markdown + ExpansionTile).
+        
+        Updated for Streaming: Handles open <think> tags gracefully.
         """
         import re
         
         controls = []
-        # Pattern to find <think> blocks
-        pattern = r'<think>(.*?)</think>'
         
-        last_pos = 0
-        for match in re.finditer(pattern, text, re.DOTALL):
-            # Part before <think>
-            pre_text = text[last_pos:match.start()].strip()
+        # 1. Check for <think> block
+        # We only handle ONE think block for now (standard for R1/DeepSeek)
+        # Regex to find the start of the block
+        start_match = re.search(r'<think>', text)
+        
+        if start_match:
+            # A. Content BEFORE the think block
+            pre_text = text[:start_match.start()].strip()
             if pre_text:
                 controls.append(
                     ft.Markdown(
@@ -159,40 +163,84 @@ class ChatView(ft.Container):
                     )
                 )
             
-            # The <think> block
-            thought_text = match.group(1).strip()
-            if thought_text:
-                controls.append(
-                    ft.Container(
-                        content=ft.ExpansionTile(
-                            title=ft.Text("Thought Process", size=12, italic=True, color=ColorPalette.TEXT_SECONDARY),
-                            controls=[
-                                ft.Markdown(
-                                    thought_text,
-                                    selectable=True,
-                                    extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-                                    code_theme="atom-one-dark"
-                                )
-                            ],
-                            initially_expanded=False,
-                            bgcolor=ft.Colors.TRANSPARENT,
-                            collapsed_bgcolor=ft.Colors.TRANSPARENT,
-                            text_color=ColorPalette.TEXT_SECONDARY,
-                            controls_padding=ft.padding.only(left=10, bottom=10),
-                        ),
-                        border=ft.border.all(1, ColorPalette.BORDER),
-                        border_radius=10,
-                        margin=ft.margin.only(top=5, bottom=5)
-                    )
-                )
-            last_pos = match.end()
+            # B. The Think Block
+            # Check if it is closed
+            remainder = text[start_match.end():]
+            end_match = re.search(r'</think>', remainder)
             
-        # Remaining text after the last </think>
-        post_text = text[last_pos:].strip()
-        if post_text:
+            if end_match:
+                # Closed thought
+                thought_text = remainder[:end_match.start()].strip()
+                post_text = remainder[end_match.end():].strip()
+                
+                if thought_text:
+                    controls.append(
+                        ft.Container(
+                            content=ft.ExpansionTile(
+                                title=ft.Text("Thought Process", size=12, italic=True, color=ColorPalette.TEXT_SECONDARY),
+                                controls=[
+                                    ft.Markdown(
+                                        thought_text,
+                                        selectable=True,
+                                        extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                                        code_theme="atom-one-dark"
+                                    )
+                                ],
+                                # initially_expanded=False,
+                                bgcolor=ft.Colors.TRANSPARENT,
+                                collapsed_bgcolor=ft.Colors.TRANSPARENT,
+                                text_color=ColorPalette.TEXT_SECONDARY,
+                                controls_padding=ft.padding.only(left=10, bottom=10),
+                            ),
+                            border=ft.border.all(1, ColorPalette.BORDER),
+                            border_radius=10,
+                            margin=ft.margin.only(top=5, bottom=5)
+                        )
+                    )
+                
+                # C. Content AFTER the think block
+                if post_text:
+                     controls.append(
+                        ft.Markdown(
+                            post_text,
+                            selectable=True,
+                            extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                            on_tap_link=lambda e: self.page.launch_url(e.data),
+                        )
+                    )
+            else:
+                # Open thought (Streaming in progress)
+                thought_text = remainder.strip()
+                if thought_text:
+                     controls.append(
+                        ft.Container(
+                            content=ft.ExpansionTile(
+                                title=ft.Text("Thinking...", size=12, italic=True, color=ColorPalette.ACCENT),
+                                controls=[
+                                    ft.Markdown(
+                                        thought_text + " █", # Cursor effect
+                                        selectable=True,
+                                        extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                                        code_theme="atom-one-dark"
+                                    )
+                                ],
+                                # initially_expanded=True, # Auto-expand while thinking
+                                bgcolor=ft.Colors.TRANSPARENT,
+                                collapsed_bgcolor=ft.Colors.TRANSPARENT,
+                                text_color=ColorPalette.ACCENT,
+                                controls_padding=ft.padding.only(left=10, bottom=10),
+                            ),
+                            border=ft.border.all(1, ColorPalette.ACCENT, ), # opacity=0.5
+                            border_radius=10,
+                            margin=ft.margin.only(top=5, bottom=5)
+                        )
+                    )
+        
+        else:
+            # No think block, just regular markdown
             controls.append(
                 ft.Markdown(
-                    post_text,
+                    text,
                     selectable=True,
                     extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
                     on_tap_link=lambda e: self.page.launch_url(e.data),

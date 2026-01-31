@@ -49,30 +49,19 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
     print(f"--- 🚀 LAUNCHING AGENT with query: {query} ---")
     
     # 3. Stream Events
-    # We use 'astream_events' to get granular token updates if supported, 
-    # or just 'stream' for node updates. 
-    # For 'nodes.py' which returns a full message, normal stream gives node outputs.
-    # To get token streaming from the LLM within the node, we need to ensure the LLM is invoked with stream=True 
-    # and we capture the callback or use astream_events with v2.
+    # We use 'astream_events' to get granular token updates.
+    # We assume the LLM is the one generating chunks under 'on_chat_model_stream'.
     
-    # Attempting to use astream just for the final response for now.
-    async for event in graph.astream(inputs):
-        # The 'agent' node returns {"messages": [AIMessage(...)]}
-        # We need to extract the content.
-        # Note: This yields AFTER the node finishes. 
-        # For real-time token streaming, we need 'astream_events' filtering for 'on_chat_model_stream'.
+    async for event in graph.astream_events(inputs, version="v2"):
+        kind = event["event"]
         
-        # Let's try to just yield the final text first for reliability, then upgrade to token streaming.
-        for value in event.values():
-            if "messages" in value:
-                last_msg = value["messages"][-1]
-                if isinstance(last_msg, AIMessage):
-                    yield last_msg.content
-
-    # TODO: Upgrade to True Streaming
-    # async for event in graph.astream_events(inputs, version="v1"):
-    #     kind = event["event"]
-    #     if kind == "on_chat_model_stream":
-    #         content = event["data"]["chunk"].content
-    #         if content:
-    #             yield content
+        # Filter for LLM streaming events
+        if kind == "on_chat_model_stream":
+            # We want to ignore tool calls chunks if possible, or handle them.
+            # Usually 'chunk' content is just the text delta.
+            data = event["data"]
+            if "chunk" in data:
+                chunk = data["chunk"]
+                # chunk is a BaseMessageChunk (AIMessageChunk)
+                if hasattr(chunk, "content") and chunk.content:
+                    yield chunk.content

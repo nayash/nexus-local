@@ -29,7 +29,7 @@ def main(page: ft.Page):
         page.add(app)
 
     # Initialize with StartupView
-    page.add(StartupView(page, on_success=on_startup_success, is_local=False))
+    page.add(StartupView(page, on_success=on_startup_success, is_local=True))
 
 if __name__ == "__main__":
     ft.run(main)
