@@ -112,7 +112,13 @@ def ingest_path(path: str):
 
 # Quick test block
 def init_knowledge():
-    with open("test_knowledge.txt", "w") as f:
-        f.write("Project Nexus-Local is a private AI search engine designed by an Elite Engineer, Asutosh Nayak.")
+    # with open("test_knowledge.txt", "w") as f:
+    #     f.write("Project Nexus-Local is a private AI search engine designed by an Elite Engineer, Asutosh Nayak.")
     
-    ingest_file("test_knowledge.txt")
+    # Resolve path relative to this file to ensure it works when packaged
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    # Go up 2 levels: src/rag -> src -> project_root
+    project_root = os.path.abspath(os.path.join(current_dir, "..", ".."))
+    data_file = os.path.join(project_root, "data", "nexus-identity.txt")
+    
+    ingest_file(data_file)

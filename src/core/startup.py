@@ -9,6 +9,7 @@ import platform
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable, Optional
+from src.rag.ingestion import init_knowledge
 
 @dataclass
 class StartupResult:
@@ -73,6 +74,10 @@ class StartupManager:
             on_update("Verifying storage...", 0.9, False)
             if not self._check_filesystem():
                  return StartupResult(False, web_search_enabled, "Failed to initialize storage.")
+
+            # 7. Initialize Knowledge Base
+            on_update("Initializing Knowledge Base...", 0.95, False)
+            init_knowledge()
 
             on_update("Ready!", 1.0, False)
             return StartupResult(True, web_search_enabled, None)
