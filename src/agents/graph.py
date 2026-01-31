@@ -7,38 +7,38 @@ from app.agents.nodes import agent_node
 from app.agents.router import route_question
 from app.tools.registry import TOOLS
 
-def build_graph_old():
-    """
-    Constructs the branching LangGraph workflow.
-    """
-    workflow = StateGraph(AgentState)
+# def build_graph_old():
+#     """
+#     Constructs the branching LangGraph workflow.
+#     """
+#     workflow = StateGraph(AgentState)
     
-    # 1. Add Nodes
-    workflow.add_node("web_search", web_search_node)
-    workflow.add_node("local_search", local_search_node)
-    workflow.add_node("generate", generate_node)
+#     # 1. Add Nodes
+#     workflow.add_node("web_search", web_search_node)
+#     workflow.add_node("local_search", local_search_node)
+#     workflow.add_node("generate", generate_node)
     
-    # 2. Define Entry Point (The Router)
-    # Instead of pointing to a node, we point to a conditional function
-    workflow.set_conditional_entry_point(
-        route_question,
-        {
-            # Mapper: Output of route_question -> Node Name
-            "web_search": "web_search",
-            "local_search": "local_search",
-            "generate": "generate",
-        }
-    )
+#     # 2. Define Entry Point (The Router)
+#     # Instead of pointing to a node, we point to a conditional function
+#     workflow.set_conditional_entry_point(
+#         route_question,
+#         {
+#             # Mapper: Output of route_question -> Node Name
+#             "web_search": "web_search",
+#             "local_search": "local_search",
+#             "generate": "generate",
+#         }
+#     )
     
-    # 3. Define Standard Edges
-    # If we searched, we ALWAYS go to generate afterwards
-    workflow.add_edge("web_search", "generate")
-    workflow.add_edge("local_search", "generate")
+#     # 3. Define Standard Edges
+#     # If we searched, we ALWAYS go to generate afterwards
+#     workflow.add_edge("web_search", "generate")
+#     workflow.add_edge("local_search", "generate")
     
-    # If we generated, we end
-    workflow.add_edge("generate", END)
+#     # If we generated, we end
+#     workflow.add_edge("generate", END)
     
-    return workflow.compile()
+#     return workflow.compile()
 
 def build_graph():
     workflow = StateGraph(AgentState)
