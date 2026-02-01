@@ -1,6 +1,6 @@
 # Product Requirement Document (PRD): Nexus-Local
 
-**Version:** 2.0 (Native Desktop Edition)
+**Version:** 0.1.0 (Native Desktop Edition)
 **Status:** DRAFT
 **Project Codename:** Nexus-Local
 **Target Platform:** Consumer Laptop (Nvidia 8GB VRAM)

@@ -22,8 +22,8 @@ class StartupManager:
     Manages application startup checks and initialization.
     Ensures dependencies, connectivity, and background services (Ollama) are ready.
     """
-    def __init__(self, is_local: bool = False):
-        self.is_local = is_local
+    def __init__(self, is_dev: bool = False):
+        self.is_dev = is_dev
     
     REQUIRED_MODELS = [
         "llama3.1",
@@ -41,7 +41,7 @@ class StartupManager:
             StartupResult: Result of the startup process.
         """
         try:
-            if self.is_local:
+            if self.is_dev:
                 return StartupResult(True, True, None)
 
             # 1. Dependency Verification

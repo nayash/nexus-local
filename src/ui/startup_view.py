@@ -9,11 +9,11 @@ class StartupView(ft.Container):
     Self-contained Startup UI component.
     Handles system checks and reports progress.
     """
-    def __init__(self, page: ft.Page, on_success: Callable[[StartupResult], None], is_local: bool = False):
+    def __init__(self, page: ft.Page, on_success: Callable[[StartupResult], None], is_dev: bool = False):
         super().__init__(expand=True)
         self._main_page = page
         self.on_success = on_success
-        self.manager = StartupManager(is_local=is_local)
+        self.manager = StartupManager(is_dev=is_dev)
 
         # UI Components
         self.status_text = ft.Text("Initializing...", style=TextStyles.body_normal())
