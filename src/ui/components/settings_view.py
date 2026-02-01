@@ -1,6 +1,7 @@
 import flet as ft
 from styles import ColorPalette, TextStyles
 import asyncio
+from src.ui.managers.notification_manager import NotificationManager
 
 class SettingsView(ft.Container):
     def __init__(self, on_back_click):
@@ -12,8 +13,6 @@ class SettingsView(ft.Container):
         self.content = self.build_content()
 
     def build_content(self):
-        # We need a reference to the snackbar for status updates
-        self.status_snack = ft.SnackBar(content=ft.Text(""), show_close_icon=True)
         
         # Confirmation Dialog for clearing DB
         self.clear_confirm_dialog = ft.AlertDialog(
@@ -89,7 +88,6 @@ class SettingsView(ft.Container):
     def did_mount(self):
         # Determine if we can add to overlay
         if self.page:
-            self.page.overlay.append(self.status_snack)
             self.page.overlay.append(self.clear_confirm_dialog)
             self.page.update()
 
@@ -106,7 +104,7 @@ class SettingsView(ft.Container):
 
     async def run_ingestion(self, path):
         # Show specific loading message
-        await self.show_snack(f"Starting ingestion for: {path}...", color="blue")
+        NotificationManager.info(f"Starting ingestion for: {path}...")
         
         # Run in background to avoid freezing UI
         # In a real app, use threading or async task properly.
@@ -117,30 +115,16 @@ class SettingsView(ft.Container):
         async def task():
             try:
                 success, msg, _ = ingest_path(path)
-                color = "green" if success else "red"
-                await self.show_snack(msg, color)
+                if success:
+                    NotificationManager.success(msg)
+                else:
+                    NotificationManager.error(msg)
             except Exception as ex:
-                await self.show_snack(f"Error: {str(ex)}", "red")
+                NotificationManager.error(f"Error: {str(ex)}")
         
         threading.Thread(target=task, daemon=True).start()
     
-    async def show_snack(self, message, color):
-        """
-        Async snackbar helper that resets state to ensure it always shows,
-        even if called multiple times in a row.
-        """
-        # 1. Force close first (resets the internal timer/state)
-        self.status_snack.open = False
-        self.status_snack.update()
-        
-        # 2. Give the UI loop a tiny moment to register the "Closed" state
-        await asyncio.sleep(0.1)
-        
-        # 3. Now set the new content and open it
-        self.status_snack.content = ft.Text(message, color="white")
-        self.status_snack.bgcolor = color if color != "blue" else ColorPalette.ACCENT
-        self.status_snack.open = True
-        self.status_snack.update()
+
 
     async def clear_database(self, e):
         """Triggers the safety confirmation prompt."""
@@ -159,7 +143,8 @@ class SettingsView(ft.Container):
         self.page.update()
         
         # 2. Show loading snack
-        await self.show_snack("Clearing Vector Database...", "blue")
+        # 2. Show loading snack
+        NotificationManager.info("Clearing Vector Database...")
         
         try:
             from src.rag.storage import clear_all_tables
@@ -169,13 +154,13 @@ class SettingsView(ft.Container):
                 await asyncio.to_thread(clear_all_tables)
                 print('clear_all_data asyncio completed')
                 
-                await self.show_snack("Vector database cleared successfully!", "green")
+                NotificationManager.success("Vector database cleared successfully!")
             except Exception as ex:
                 print(f"Error clearing DB: {ex}")
-                await self.show_snack(f"Failed to clear database: {str(ex)}", "red")
+                NotificationManager.error(f"Failed to clear database: {str(ex)}")
             
         except ImportError as ex:
-            await self.show_snack("Critical Error: Storage module not found.", "red")
+            NotificationManager.error("Critical Error: Storage module not found.")
 
     def create_setting_card(self, title, subtitle, control):
         return ft.Container(

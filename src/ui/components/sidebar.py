@@ -99,7 +99,10 @@ class Sidebar(ft.Container):
             self.repo.delete_chat(chat_id)
             self.refresh_chats()
             self.on_new_chat_click()
-            self.app_page.show_dialog(ft.SnackBar(content=ft.Text("Chat deleted")))
+            self.app_page.show_dialog(ft.SnackBar(content=ft.Text("Chat deleted"))) # Keeping legacy for now or remove? Remove.
+            # Actually I need to import NotificationManager
+            from src.ui.managers.notification_manager import NotificationManager
+            NotificationManager.success("Chat deleted")
         except Exception as ex:
             print(f"Error deleting chat: {ex}")
 
@@ -125,10 +128,12 @@ class Sidebar(ft.Container):
             self.on_new_chat_click()
             
             # Show confirmation
-            self.app_page.show_dialog(ft.SnackBar(content=ft.Text("History cleared successfully")))
+            # Show confirmation
+            from src.ui.managers.notification_manager import NotificationManager
+            NotificationManager.success("History cleared successfully")
         except Exception as ex:
             print(f"Error clearing history: {ex}")
-            self.app_page.show_dialog(ft.SnackBar(content=ft.Text(f"Error clearing history: {ex}")))
+            NotificationManager.error(f"Error clearing history: {ex}")
 
     def toggle_hover(self, e):
         e.control.bgcolor = ColorPalette.BORDER if e.data == "true" else None

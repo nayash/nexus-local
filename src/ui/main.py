@@ -30,12 +30,27 @@ async def main(page: ft.Page):
         page.data["web_search_enabled"] = result.web_search_enabled
         page.data["model_name"] = get_setting("model_name", "llama3.1")
         
+        # Initialize Notification Infrastructure
+        from src.ui.components.notification_box import NotificationOverlay
+        from src.ui.managers.notification_manager import NotificationManager
+        
+        notification_overlay = NotificationOverlay(page)
+        NotificationManager.set_overlay(notification_overlay)
+        
         app = AppLayout(page)
-        # Ensure the main app expands
         app.expand = True 
         
-        page.add(app)
-        page.update() # Sync update inside callback
+        # Use Stack to layer notifications on TOP of the app
+        main_stack = ft.Stack(
+            controls=[
+                app,
+                notification_overlay # Top layer
+            ],
+            expand=True
+        )
+        
+        page.add(main_stack)
+        page.update()
 
     # Initialize StartupView
     print(f'startupView adding')
