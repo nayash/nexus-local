@@ -114,3 +114,12 @@ class ChatRepository:
         cursor.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
         conn.commit()
         conn.close()
+
+    def clear_all_chats(self):
+        """Deletes all chats and messages from the database."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM messages")
+        cursor.execute("DELETE FROM chats")
+        conn.commit()
+        conn.close()

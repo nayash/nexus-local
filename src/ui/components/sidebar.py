@@ -70,14 +70,38 @@ class Sidebar(ft.Container):
 
     def create_history_item(self, title, chat_id):
         return ft.Container(
-            content=ft.Text(title, color=ColorPalette.TEXT_SECONDARY, size=13, no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS),
-            padding=10,
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        content=ft.Text(title, color=ColorPalette.TEXT_SECONDARY, size=13, no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS),
+                        expand=True,
+                        on_click=lambda _: self.on_chat_selected(chat_id),
+                    ),
+                    ft.IconButton(
+                        icon=ft.Icons.DELETE_OUTLINE,
+                        icon_color=ColorPalette.TEXT_SECONDARY,
+                        icon_size=14,
+                        tooltip="Delete",
+                        on_click=lambda _: self.delete_individual_chat(chat_id)
+                    )
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                spacing=0
+            ),
+            padding=ft.padding.only(left=10, right=0, top=0, bottom=0),
             border_radius=5,
             on_hover=lambda e: self.toggle_hover(e),
-            on_click=lambda _: self.on_chat_selected(chat_id),
-            ink=True,
             data=chat_id
         )
+
+    def delete_individual_chat(self, chat_id):
+        try:
+            self.repo.delete_chat(chat_id)
+            self.refresh_chats()
+            self.on_new_chat_click()
+            self.app_page.show_dialog(ft.SnackBar(content=ft.Text("Chat deleted")))
+        except Exception as ex:
+            print(f"Error deleting chat: {ex}")
 
     def create_action_button(self, text, icon, on_click=None):
         return ft.Container(
@@ -94,10 +118,17 @@ class Sidebar(ft.Container):
         )
     
     def handle_clear_history(self, e):
-        # MVP: Should probably have a cleanup in repo
-        # For now, just re-init DB or delete logic
-        # self.repo.delete_all() # Not implemented yet
-        pass
+        """Clears all chat history and resets the UI."""
+        try:
+            self.repo.clear_all_chats()
+            self.refresh_chats()
+            self.on_new_chat_click()
+            
+            # Show confirmation
+            self.app_page.show_dialog(ft.SnackBar(content=ft.Text("History cleared successfully")))
+        except Exception as ex:
+            print(f"Error clearing history: {ex}")
+            self.app_page.show_dialog(ft.SnackBar(content=ft.Text(f"Error clearing history: {ex}")))
 
     def toggle_hover(self, e):
         e.control.bgcolor = ColorPalette.BORDER if e.data == "true" else None

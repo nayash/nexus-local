@@ -21,7 +21,7 @@ route_prompt = ChatPromptTemplate.from_messages([
     Options:
     - "web_search": If the user asks about current events, public news, or external technical facts (e.g., "React 19 features", "Weather").
     - "local_search": If the user asks about "Nexus-Local", "project plans", "my documents", or specific local files.
-    - "generate": If the user just wants to chat, greeting, or general knowledge.
+    - "generate": If the user just wants to chat, greeting, or general knowledge. E.g. If user says "Hi", "Hello", "How are you?" -- answer in a friendly manner.
     
     Output ONLY the option name. No preamble."""),
     ("human", "{question}"),
