@@ -104,9 +104,9 @@ class SettingsView(ft.Container):
             file_path = files[0].path
             self.run_ingestion(file_path)
 
-    def run_ingestion(self, path):
+    async def run_ingestion(self, path):
         # Show specific loading message
-        self.show_snack(f"Starting ingestion for: {path}...", color="blue")
+        await self.show_snack(f"Starting ingestion for: {path}...", color="blue")
         
         # Run in background to avoid freezing UI
         # In a real app, use threading or async task properly.
@@ -114,24 +114,37 @@ class SettingsView(ft.Container):
         import threading
         from src.rag.ingestion import ingest_path
         
-        def task():
+        async def task():
             try:
                 success, msg, _ = ingest_path(path)
                 color = "green" if success else "red"
-                self.show_snack(msg, color)
+                await self.show_snack(msg, color)
             except Exception as ex:
-                self.show_snack(f"Error: {str(ex)}", "red")
+                await self.show_snack(f"Error: {str(ex)}", "red")
         
         threading.Thread(target=task, daemon=True).start()
-
-    def show_snack(self, message, color):
+    
+    async def show_snack(self, message, color):
+        """
+        Async snackbar helper that resets state to ensure it always shows,
+        even if called multiple times in a row.
+        """
+        # 1. Force close first (resets the internal timer/state)
+        self.status_snack.open = False
+        self.status_snack.update()
+        
+        # 2. Give the UI loop a tiny moment to register the "Closed" state
+        await asyncio.sleep(0.1)
+        
+        # 3. Now set the new content and open it
         self.status_snack.content = ft.Text(message, color="white")
         self.status_snack.bgcolor = color if color != "blue" else ColorPalette.ACCENT
         self.status_snack.open = True
-        self.page.update()
+        self.status_snack.update()
 
     async def clear_database(self, e):
         """Triggers the safety confirmation prompt."""
+        print("Clear database called")
         self.clear_confirm_dialog.open = True
         self.page.update()
 
@@ -146,20 +159,23 @@ class SettingsView(ft.Container):
         self.page.update()
         
         # 2. Show loading snack
-        self.show_snack("Clearing Vector Database...", "blue")
+        await self.show_snack("Clearing Vector Database...", "blue")
         
         try:
             from src.rag.storage import clear_all_tables
             # Use threading to keep UI snappy if it takes a while
             try:
-                asyncio.to_thread(clear_all_tables())
-                self.show_snack("Vector database cleared successfully!", "green")
+                print('calling clear_all_data asyncio')
+                await asyncio.to_thread(clear_all_tables)
+                print('clear_all_data asyncio completed')
+                
+                await self.show_snack("Vector database cleared successfully!", "green")
             except Exception as ex:
                 print(f"Error clearing DB: {ex}")
-                self.show_snack(f"Failed to clear database: {str(ex)}", "red")
+                await self.show_snack(f"Failed to clear database: {str(ex)}", "red")
             
         except ImportError as ex:
-            self.show_snack("Critical Error: Storage module not found.", "red")
+            await self.show_snack("Critical Error: Storage module not found.", "red")
 
     def create_setting_card(self, title, subtitle, control):
         return ft.Container(

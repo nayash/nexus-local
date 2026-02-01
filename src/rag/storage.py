@@ -31,8 +31,10 @@ def list_tables():
 
 def clear_all_tables():
     """Drops all tables in the LanceDB database."""
+    print('inside clear_all_tables')
     db = get_db_connection()
     tables = db.table_names()
+    print(f'vector db tables: {tables}')
     for table in tables:
         db.drop_table(table)
     print("Vector database cleared.")

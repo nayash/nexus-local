@@ -40,55 +40,74 @@ class StartupManager:
         Returns:
             StartupResult: Result of the startup process.
         """
+        print(f'is_dev: {self.is_dev}')
         try:
             if self.is_dev:
+                print("🚀 DEV MODE: Skipping all startup checks")
                 return StartupResult(True, True, None)
 
             # 1. Dependency Verification
             on_update("Verifying dependencies...", 0.1, False)
             if not self._check_dependencies():
-                return StartupResult(False, False, "Corrupt installation. Missing dependencies.")
+                error_msg = "Corrupt installation. Missing dependencies."
+                print(f"❌ STARTUP FAILED: {error_msg}")
+                return StartupResult(False, False, error_msg)
             
             # 2. Internet & Search Check
             on_update("Checking connectivity...", 0.2, False)
             web_search_enabled = self._check_internet_connection()
             if not web_search_enabled:
+                 print("⚠️ Offline Mode: Web search disabled")
                  on_update("Offline Mode: Web search disabled", 0.25, False)
 
             # 3. Ollama Binary Check
             on_update("Checking AI Engine...", 0.3, False)
             if not self._check_ollama_binary(on_update):
-                 return StartupResult(False, web_search_enabled, "Failed to install or find Ollama.")
+                 error_msg = "Failed to install or find Ollama."
+                 print(f"❌ STARTUP FAILED: {error_msg}")
+                 return StartupResult(False, web_search_enabled, error_msg)
 
             # 4. Ollama Service Check
             on_update("Connecting to AI Service...", 0.5, False)
             if not self._check_ollama_service(on_update):
-                return StartupResult(False, web_search_enabled, "Failed to start AI Service.")
+                error_msg = "Failed to start AI Service."
+                print(f"❌ STARTUP FAILED: {error_msg}")
+                return StartupResult(False, web_search_enabled, error_msg)
 
             # 5. AI Model Check
             on_update("Checking AI Models...", 0.7, False)
             if not self._check_models(on_update):
-                return StartupResult(False, web_search_enabled, "Failed to download required models.")
+                error_msg = "Failed to download required models."
+                print(f"❌ STARTUP FAILED: {error_msg}")
+                return StartupResult(False, web_search_enabled, error_msg)
 
             # 6. File System Check
             on_update("Verifying storage...", 0.9, False)
             if not self._check_filesystem():
-                 return StartupResult(False, web_search_enabled, "Failed to initialize storage.")
+                 error_msg = "Failed to initialize storage."
+                 print(f"❌ STARTUP FAILED: {error_msg}")
+                 return StartupResult(False, web_search_enabled, error_msg)
 
             # 7. Initialize Knowledge Base
             on_update("Initializing Knowledge Base...", 0.95, False)
             init_knowledge()
 
             on_update("Ready!", 1.0, False)
+            print("✅ STARTUP SUCCESSFUL")
             return StartupResult(True, web_search_enabled, None)
 
         except Exception as e:
-            return StartupResult(False, False, f"Unexpected error during startup: {str(e)}")
+            import traceback
+            error_msg = f"Unexpected error during startup: {str(e)}"
+            print(f"❌ STARTUP EXCEPTION: {error_msg}")
+            print("Full traceback:")
+            traceback.print_exc()
+            return StartupResult(False, False, error_msg)
 
     def _check_dependencies(self) -> bool:
         """Verify critical libraries are importable."""
         required_deps = [
-            "flet", "langgraph", "duckduckgo_search", 
+            "flet", "langgraph", "ddgs", 
             "lancedb", "pypdf", "pandas"
         ]
         try:
@@ -98,12 +117,16 @@ class StartupManager:
             # However, doing 'import flet' here just tests current env.
             import flet
             import langgraph
-            import duckduckgo_search
+            import ddgs
             import lancedb
             import pypdf
             import pandas
+            import requests
+            import pydantic
+
             return True
-        except ImportError:
+        except ImportError as e:
+            print(f'dependency check failed: {e}')
             return False
 
     def _check_internet_connection(self) -> bool:

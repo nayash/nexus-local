@@ -76,11 +76,15 @@ class StartupView(ft.Container):
         result = self.manager.run_checks(self.on_startup_update)
         
         if result.success:
+            print("✅ Startup complete, transitioning to main app...")
             self.on_success(result)
         else:
-            # Show error
+            print(f"❌ Startup failed: {result.error_message}")
+            # Show error - ensure all updates happen together
             self.status_text.visible = False
             self.progress_bar.visible = False
             self.error_container.visible = True
             self.error_msg.value = result.error_message
+            # Critical: Force page update from background thread
             self._main_page.update()
+
