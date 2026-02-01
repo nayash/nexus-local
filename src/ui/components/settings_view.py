@@ -1,5 +1,6 @@
 import flet as ft
 from styles import ColorPalette, TextStyles
+import asyncio
 
 class SettingsView(ft.Container):
     def __init__(self, on_back_click):
@@ -150,17 +151,12 @@ class SettingsView(ft.Container):
         try:
             from src.rag.storage import clear_all_tables
             # Use threading to keep UI snappy if it takes a while
-            import threading
-            
-            def task():
-                try:
-                    clear_all_tables()
-                    self.show_snack("Vector database cleared successfully!", "green")
-                except Exception as ex:
-                    print(f"Error clearing DB: {ex}")
-                    self.show_snack(f"Failed to clear database: {str(ex)}", "red")
-            
-            threading.Thread(target=task, daemon=True).start()
+            try:
+                asyncio.to_thread(clear_all_tables())
+                self.show_snack("Vector database cleared successfully!", "green")
+            except Exception as ex:
+                print(f"Error clearing DB: {ex}")
+                self.show_snack(f"Failed to clear database: {str(ex)}", "red")
             
         except ImportError as ex:
             self.show_snack("Critical Error: Storage module not found.", "red")
