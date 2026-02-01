@@ -14,6 +14,17 @@ class SettingsView(ft.Container):
         # We need a reference to the snackbar for status updates
         self.status_snack = ft.SnackBar(content=ft.Text(""), show_close_icon=True)
         
+        # Confirmation Dialog for clearing DB
+        self.clear_confirm_dialog = ft.AlertDialog(
+            title=ft.Text("Confirm Deletion"),
+            content=ft.Text("Are you sure you want to permanently delete ALL indexed data in the vector database? This action cannot be undone."),
+            actions=[
+                ft.TextButton("Cancel", on_click=self.close_dialog),
+                ft.ElevatedButton("Delete All", bgcolor=ColorPalette.ERROR, color=ft.Colors.WHITE, on_click=self.confirm_clear_database),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
         return ft.Column(
             controls=[
                 ft.Row(
@@ -78,6 +89,7 @@ class SettingsView(ft.Container):
         # Determine if we can add to overlay
         if self.page:
             self.page.overlay.append(self.status_snack)
+            self.page.overlay.append(self.clear_confirm_dialog)
             self.page.update()
 
     async def handle_browse_folder(self, e):
@@ -115,11 +127,43 @@ class SettingsView(ft.Container):
         self.status_snack.content = ft.Text(message, color="white")
         self.status_snack.bgcolor = color if color != "blue" else ColorPalette.ACCENT
         self.status_snack.open = True
-        self.status_snack.update()
+        self.page.update()
 
-    def clear_database(self, e):
-        # Placeholder for clearing DB logic
-        self.show_snack("Clear Database not implemented yet (Safety check needed).", "red")
+    async def clear_database(self, e):
+        """Triggers the safety confirmation prompt."""
+        self.clear_confirm_dialog.open = True
+        self.page.update()
+
+    def close_dialog(self, e):
+        self.clear_confirm_dialog.open = False
+        self.page.update()
+
+    async def confirm_clear_database(self, e):
+        """Executes the actual deletion after confirmation."""
+        # 1. Close dialog
+        self.clear_confirm_dialog.open = False
+        self.page.update()
+        
+        # 2. Show loading snack
+        self.show_snack("Clearing Vector Database...", "blue")
+        
+        try:
+            from src.rag.storage import clear_all_tables
+            # Use threading to keep UI snappy if it takes a while
+            import threading
+            
+            def task():
+                try:
+                    clear_all_tables()
+                    self.show_snack("Vector database cleared successfully!", "green")
+                except Exception as ex:
+                    print(f"Error clearing DB: {ex}")
+                    self.show_snack(f"Failed to clear database: {str(ex)}", "red")
+            
+            threading.Thread(target=task, daemon=True).start()
+            
+        except ImportError as ex:
+            self.show_snack("Critical Error: Storage module not found.", "red")
 
     def create_setting_card(self, title, subtitle, control):
         return ft.Container(

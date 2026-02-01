@@ -3,8 +3,9 @@ import uuid
 import datetime
 from typing import List, Dict, Optional
 import os
+from src.core.config import Config
 
-DB_PATH = "data/sqlite/nexus.db"
+DB_PATH = Config.SQLITE_PATH
 
 def init_db():
     """Initializes the SQLite database and creates tables if they don't exist."""

@@ -5,3 +5,4 @@ class Config:
     SEARXNG_BASE_URL = "http://localhost:8080"
     OLLAMA_BASE_URL = "http://localhost:11434"
     LANCEDB_PATH = "data/lancedb"
+    SQLITE_PATH = "data/sqlite/nexus.db"
