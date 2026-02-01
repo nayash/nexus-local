@@ -1,4 +1,4 @@
-import threading
+import asyncio
 import flet as ft
 from typing import Callable
 from styles import ColorPalette, TextStyles
@@ -28,7 +28,8 @@ class StartupView(ft.Container):
                 self.error_msg,
                 ft.ElevatedButton(
                     "Retry", 
-                    on_click=lambda _: self.start_checks(), 
+                    # Fix: invoke async method correctly from lambda
+                    on_click=lambda _: asyncio.create_task(self.start_checks()), 
                     bgcolor=ColorPalette.ACCENT, 
                     color=ColorPalette.TEXT_PRIMARY
                 )
@@ -52,16 +53,20 @@ class StartupView(ft.Container):
 
     def did_mount(self):
         """Automatically start checks when component is added to page."""
-        self.start_checks()
+        # FIX: Use asyncio.create_task instead of threading.Thread
+        asyncio.create_task(self.start_checks())
 
     def on_startup_update(self, message: str, progress: float, is_error: bool):
+        # This runs in the worker thread, but simple property updates + update() 
+        # are generally thread-safe in Flet.
         self.status_text.value = message
         self.progress_bar.value = progress
         if is_error:
             self.status_text.color = ColorPalette.ERROR
         self._main_page.update()
 
-    def start_checks(self):
+    async def start_checks(self):
+        """Async wrapper that offloads blocking work to a thread but keeps control flow on main loop."""
         # Reset UI
         self.error_container.visible = False
         self.status_text.visible = True
@@ -69,22 +74,18 @@ class StartupView(ft.Container):
         self.status_text.color = ColorPalette.TEXT_PRIMARY
         self._main_page.update()
         
-        # Run in thread
-        threading.Thread(target=self.run_startup_logic, daemon=True).start()
-
-    def run_startup_logic(self):
-        result = self.manager.run_checks(self.on_startup_update)
+        # FIX: Run the blocking manager checks in a thread, but AWAIT it.
+        # This returns control to the main thread immediately after the background work is done.
+        result = await asyncio.to_thread(self.manager.run_checks, self.on_startup_update)
         
         if result.success:
             print("✅ Startup complete, transitioning to main app...")
+            # FIX: This now runs on the MAIN thread, so page.clean() in the callback works instantly.
             self.on_success(result)
         else:
             print(f"❌ Startup failed: {result.error_message}")
-            # Show error - ensure all updates happen together
             self.status_text.visible = False
             self.progress_bar.visible = False
             self.error_container.visible = True
             self.error_msg.value = result.error_message
-            # Critical: Force page update from background thread
             self._main_page.update()
-
