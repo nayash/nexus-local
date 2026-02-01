@@ -12,6 +12,7 @@ class ChatView(ft.Container):
     def __init__(self, on_update=None):
         super().__init__()
         self.repo = ChatRepository()
+        from src.ui.managers.notification_manager import NotificationManager
         self.current_chat_id = None
         self.on_update = on_update
         
@@ -123,7 +124,7 @@ class ChatView(ft.Container):
             for msg in messages:
                 self.add_message(msg["content"], is_user=(msg["role"] == "user"))
         except Exception as e:
-            self.page.show_dialog(ft.SnackBar(content=ft.Text(f"Failed to load chat: {e}")))
+            NotificationManager.error(f"Failed to load chat: {e}")
             
         self.chat_history.update()
 
@@ -166,29 +167,28 @@ class ChatView(ft.Container):
             files = await ft.FilePicker().pick_files(allow_multiple=False)
             if files:
                 file_path = files[0].path
-                # Show loading snackbar
-                self.page.show_dialog(ft.SnackBar(content=ft.Text(f"Focusing on {files[0].name}...")))
+                # Show loading notification
+                NotificationManager.info(f"Focusing on {files[0].name}...")
                 
                 # Ingest quietly
                 from src.rag.ingestion import ingest_file
-                # Note: We must import inside to avoid circular deps if any, or just standard import
                 
                 success, msg, _ = ingest_file(file_path, table_name="documents")
                 
                 if success:
                     self.page.data["focused_file"] = file_path
                     self.update_focus_ui(file_path)
-                    self.page.show_dialog(ft.SnackBar(content=ft.Text("Focused! Agent will only search this file."), bgcolor="green"))
+                    NotificationManager.success("Focused! Agent will only search this file.")
                 else:
-                    self.page.show_dialog(ft.SnackBar(content=ft.Text(f"Failed to ingest: {msg}"), bgcolor="red"))
+                    NotificationManager.error(f"Failed to ingest: {msg}")
         except Exception as ex:
-             # self.page.open(ft.SnackBar(content=ft.Text(f"Error: {ex}"), bgcolor="red"))
+             NotificationManager.error(f"Error in attach: {ex}")
              print(f"Error in attach: {ex}")
 
     def clear_focus(self, e):
         self.page.data["focused_file"] = None
         self.update_focus_ui(None)
-        self.page.show_dialog(ft.SnackBar(content=ft.Text("Focus cleared. Searching all knowledge.")))
+        NotificationManager.info("Focus cleared. Searching all knowledge.")
 
     def update_focus_ui(self, file_path):
         if file_path:
@@ -412,41 +412,34 @@ class ChatView(ft.Container):
         if not model_name:
             return
  
-        # 1. Create a Text control we can update specifically
-        status_text = ft.Text(f"Checking status of {model_name}...")
- 
-        # 2. Create the SnackBar (Set long duration so it stays during download)
-        progress_snack = ft.SnackBar(
-            content=status_text,
-            show_close_icon=True,
-            duration=1200000  # 20 minutes (prevents auto-hide during long downloads)
-        )
- 
-        # 3. Open it using the new Flet 0.80+ API
-        self.page.show_dialog(progress_snack)
+        # 1. Notify start
+        from src.ui.managers.notification_manager import NotificationManager
+        NotificationManager.info(f"Checking/Downloading status of {model_name}...")
  
         # 4. Define the callback to update the Text control directly
         async def progress_callback(msg: str):
             print(f'Progress: {msg}')
-            status_text.value = msg
-            status_text.update() # Update only the text, not the whole page
+            # Optional: Show interval updates if long running, but avoid spamming toast
+            if "pulling" in msg and "%" in msg:
+                 pass # Too noisy
+            else:
+                 pass # NotificationManager.info(msg) # Still too noisy maybe
  
         # 5. Run the pull logic
         try:
             # Ensure run_ollama_pull is imported and is async
             result_msg = await run_ollama_pull(model_name, progress_callback)
             print(f'Result of model selection: {result_msg}')
+            
             if "ready" in result_msg:
                 self.page.data["model_name"] = model_name
                 save_setting("model_name", model_name)
-            status_text.value = result_msg
-            status_text.color = "green"
+                NotificationManager.success(f"Model {model_name} ready.")
+            else:
+                NotificationManager.info(result_msg)
+                
         except Exception as ex:
-            status_text.value = f"Error: {str(ex)}"
-            status_text.color = "red"
-        
-        # Final UI refresh for the text color change
-        status_text.update()
+            NotificationManager.error(f"Error selecting model: {str(ex)}")
 
     def add_message(self, text, is_user):
         alignment = ft.MainAxisAlignment.END if is_user else ft.MainAxisAlignment.START
