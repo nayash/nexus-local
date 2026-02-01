@@ -94,35 +94,31 @@ class SettingsView(ft.Container):
     async def handle_browse_folder(self, e):
         path = await ft.FilePicker().get_directory_path()
         if path:
-            self.run_ingestion(path)
+            await self.run_ingestion(path)
 
     async def handle_browse_file(self, e):
         files = await ft.FilePicker().pick_files(allow_multiple=False)
         if files:
             file_path = files[0].path
-            self.run_ingestion(file_path)
+            await self.run_ingestion(file_path)
 
     async def run_ingestion(self, path):
         # Show specific loading message
         NotificationManager.info(f"Starting ingestion for: {path}...")
         
-        # Run in background to avoid freezing UI
-        # In a real app, use threading or async task properly.
-        # Flet often handles async handlers.
-        import threading
+        # Run blocking ingestion in background thread
         from src.rag.ingestion import ingest_path
+        import asyncio
         
-        async def task():
-            try:
-                success, msg, _ = ingest_path(path)
-                if success:
-                    NotificationManager.success(msg)
-                else:
-                    NotificationManager.error(msg)
-            except Exception as ex:
-                NotificationManager.error(f"Error: {str(ex)}")
-        
-        threading.Thread(target=task, daemon=True).start()
+        try:
+            # Use asyncio.to_thread to run blocking function in background
+            success, msg, _ = await asyncio.to_thread(ingest_path, path)
+            if success:
+                NotificationManager.success(msg)
+            else:
+                NotificationManager.error(msg)
+        except Exception as ex:
+            NotificationManager.error(f"Error: {str(ex)}")
     
 
 
