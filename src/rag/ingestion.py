@@ -102,7 +102,7 @@ def ingest_path(path: str):
     table_name = "documents" # Default for single files
 
     if os.path.isfile(path):
-        if path.endswith((".pdf", ".txt", ".md", ".csv")):
+        if path.endswith((".pdf", ".txt", ".md", ".csv", ".sh")):
             files_to_ingest.append(path)
             
     elif os.path.isdir(path):
@@ -115,11 +115,11 @@ def ingest_path(path: str):
         
         for root, _, files in os.walk(path):
             for file in files:
-                if file.endswith((".pdf", ".txt", ".md", ".csv")):
+                if file.endswith((".pdf", ".txt", ".md", ".csv", ".sh")):
                     files_to_ingest.append(os.path.join(root, file))
     
     if not files_to_ingest:
-        return False, "No supported files found (.pdf, .txt, .md, .csv).", None
+        return False, "No supported files found (.pdf, .txt, .md, .csv, .sh).", None
 
     total_chunks = 0
     successful_files = 0

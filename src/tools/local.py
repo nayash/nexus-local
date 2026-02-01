@@ -82,7 +82,7 @@ def search_local(query: str, file_filter: str = None) -> List[SearchResult]:
     # THRESHOLD CONFIG
     # In LanceDB/L2 Distance: LOWER score is BETTER (0 = exact match)
     # A score > 0.4 usually implies "vaguely related but not relevant"
-    MAX_DISTANCE = 0.8
+    MAX_DISTANCE = 0.9 # earlier value was 0.8
     global_limit = 15 if file_filter else 5 # Max total chunks to return
     
     for r in all_results[:global_limit]:
