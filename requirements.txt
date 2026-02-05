@@ -1,13 +1,24 @@
+# UI Framework
 flet[all]==0.80.4
-requests==2.32.5
-python-dotenv==1.2.1
-pydantic==2.12.5
-langgraph==1.0.7
-langchain-core==1.2.7
-langchain-ollama==1.0.1
-langchain-community==0.4.1
-lancedb==0.27.1
-pypdf==6.6.2
-langchain-text-splitters==1.1.0
-pandas==3.0.0
+
+# Core Utilities
+requests
+python-dotenv
+pydantic
+pandas
+
+# Vector Database & PDF
+lancedb
+pypdf
+
+# Web Search (The official, maintained package)
+# duckduckgo-search>=6.3.0
 ddgs==9.10.0
+
+# AI & Orchestration (Pinned for stability)
+langchain-core>=0.3.0
+langchain>=0.3.0
+langchain-community>=0.3.0
+langchain-ollama>=0.2.0
+langchain-text-splitters>=0.3.0
+langgraph
