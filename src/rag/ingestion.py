@@ -4,9 +4,9 @@ from typing import List, Literal, Optional, Tuple, Any
 from langchain_ollama import OllamaEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
-# from langchain.retrievers import ParentDocumentRetriever
-from langchain.retrievers.parent_document_retriever import ParentDocumentRetriever
-from langchain.storage import LocalFileStore
+from langchain_classic.retrievers import ParentDocumentRetriever
+# from langchain.retrievers.parent_document_retriever import ParentDocumentRetriever
+from langchain_classic.storage import LocalFileStore
 from langchain_community.vectorstores import LanceDB
 from langchain_core.documents import Document
 
