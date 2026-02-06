@@ -8,7 +8,9 @@ from langchain_classic.retrievers import ParentDocumentRetriever
 # from langchain.retrievers.parent_document_retriever import ParentDocumentRetriever
 from langchain_classic.storage import LocalFileStore
 from langchain_community.vectorstores import LanceDB
+from langchain_classic.storage import EncoderBackedStore
 from langchain_core.documents import Document
+import pickle
 
 from src.core.config import Config
 from src.rag.storage import get_db_connection, get_table
@@ -41,7 +43,14 @@ class NexusIngestor:
             self.child_splitter = RecursiveCharacterTextSplitter(chunk_size=400, chunk_overlap=50)
             
             # Persistent storage for parent documents
-            self.docstore = LocalFileStore(self.docstore_path)
+            # LocalFileStore stores bytes, so we wrap it with EncoderBackedStore to store Documents via pickle
+            self.fs_store = LocalFileStore(self.docstore_path)
+            self.docstore = EncoderBackedStore(
+                store=self.fs_store,
+                key_encoder=lambda x: x, # Simple identity for keys
+                value_serializer=pickle.dumps,
+                value_deserializer=pickle.loads
+            )
             
             # Vector store for child chunks
             # We use a dedicated table for parent-child strategy
@@ -111,6 +120,28 @@ class NexusIngestor:
             docs = loader.load()
             
             # 2. Add to Retriever (Handles splitting & storing)
+            
+            # SANITIZATION: Convert metadata fields to simple types for LanceDB compatibility
+            # LanceDB strict schema enforcement can fail on complex types or inconsistent fields.
+            for doc in docs:
+                keys_to_remove = []
+                for key, value in doc.metadata.items():
+                    # 1. Remove None values (can cause schema issues)
+                    if value is None:
+                        keys_to_remove.append(key)
+                        continue
+                    
+                    # 2. Convert complex types to strings (e.g. dates) to preserve data without breaking schema
+                    # We keep basic types (str, int, float, bool) and stringify everything else
+                    if not isinstance(value, (str, int, float, bool)):
+                        doc.metadata[key] = str(value)
+
+                for key in keys_to_remove:
+                    doc.metadata.pop(key, None)
+                    
+                # Ensure source is absolute path
+                doc.metadata["source"] = os.path.abspath(file_path)
+
             self.retriever.add_documents(docs)
             
             print(f"✅ Success! Ingested {len(docs)} parent docs into 'nexus_parent_child'.")
