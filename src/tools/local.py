@@ -69,8 +69,8 @@ def search_local(query: str, file_filter: str = None) -> List[SearchResult]:
         try:
              results = search_builder.to_list()
              for r in results:
-                 r["_table"] = table_name # Track origin
-                 all_results.append(r)
+                r["_table"] = table_name # Track origin
+                all_results.append(r)
         except Exception as e:
             print(f"Error searching table {table_name}: {e}")
 
@@ -87,14 +87,34 @@ def search_local(query: str, file_filter: str = None) -> List[SearchResult]:
     
     for r in all_results[:global_limit]:
         score = r.get("_distance", 1.0)
-        print(f"DEBUG: Found '{r['source']}' in table '{r.get('_table')}' with distance: {score}")
+        
+        # Normalize Result Fields (Handle different schemas from different strategies)
+        # Parent Strategy: source is inside 'metadata' dict
+        # Legacy Strategy: source is top-level key
+        
+        source = r.get("source")
+        text = r.get("text")
+        
+        # Check metadata if source/text are missing (Parent Strategy Schema)
+        if not source and "metadata" in r and isinstance(r["metadata"], dict):
+            source = r["metadata"].get("source")
+            
+        # Fallback if text is missing but page_content exists
+        if not text and "page_content" in r:
+             text = r["page_content"]
+             
+        # Fallback for source
+        if not source:
+             source = "Unknown Source"
+
+        print(f"DEBUG: Found '{source}' in table '{r.get('_table')}' with distance: {score}")
 
         if file_filter or score <= MAX_DISTANCE:
             filtered_results.append(
                 SearchResult(
-                    title=f'Local File ({r.get("_table", "doc")}): {os.path.basename(r["source"])}',
-                    url=r["source"], 
-                    content=r["text"],
+                    title=f'Local File ({r.get("_table", "doc")}): {os.path.basename(source)}',
+                    url=source, 
+                    content=text or "No content available",
                     source="local"
                 )
             )
