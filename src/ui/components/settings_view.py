@@ -112,7 +112,7 @@ class SettingsView(ft.Container):
         
         try:
             # Use asyncio.to_thread to run blocking function in background
-            success, msg, _ = await asyncio.to_thread(ingest_path, path)
+            success, msg, _ = await asyncio.to_thread(ingest_path, path, "parent")
             if success:
                 NotificationManager.success(msg)
             else:

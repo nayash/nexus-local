@@ -216,7 +216,7 @@ class NexusIngestor:
 
 # --- Backward Compatibility Wrappers ---
 
-def ingest_file(file_path: str, table_name: str = "documents", strategy: Literal["naive", "parent"] = "naive"):
+def ingest_file(file_path: str, table_name: str = "documents", strategy: Literal["naive", "parent"] = "parent"):
     """
     Wrapper for existing code calls. Uses NAIVE strategy by default to match legacy behavior.
     """
@@ -227,6 +227,7 @@ def ingest_path(path: str, strategy: Literal["naive", "parent"] = "naive"):
     """
     Ingests all files from a directory or a single file. (Naive strategy default)
     """
+    print(f'ingesting path {path} with strategy {strategy}')
     # Logic copied and adapted to use NexusIngestor
     path = os.path.expanduser(path)
     path = os.path.abspath(path)
