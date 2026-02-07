@@ -90,7 +90,7 @@ class NexusIngestor:
         if self.strategy == "naive":
             return self._ingest_naive(file_path, table_name)
         elif self.strategy == "parent":
-            return self._ingest_parent(file_path)
+            return self._ingest_parent(file_path, table_name)
         else:
             raise ValueError(f"Unknown strategy: {self.strategy}")
 
@@ -106,6 +106,25 @@ class NexusIngestor:
             # I will implement a basic naive search here that mimics what local.py does.
             return self._search_naive(query, k, table_name)
         elif self.strategy == "parent":
+            # Support search on specific tables with parent strategy
+            if table_name and table_name != self.vector_table_name:
+                 try:
+                     vstore = LanceDB(
+                        connection=self.db,
+                        embedding=embeddings_model,
+                        table_name=table_name
+                     )
+                     temp_retriever = ParentDocumentRetriever(
+                        vectorstore=vstore,
+                        docstore=self.docstore,
+                        child_splitter=self.child_splitter,
+                        parent_splitter=self.parent_splitter
+                     )
+                     return temp_retriever.invoke(query)[:k]
+                 except Exception:
+                     # Fallback or empty if table doesn't exist
+                     return []
+
             return self.retriever.invoke(query)[:k]
 
 
@@ -169,18 +188,39 @@ class NexusIngestor:
         sanitized = "folder_" + name.strip().replace(" ", "_").replace("-", "_").replace(".", "").lower()
         return sanitized[:63]
 
-    def _ingest_parent(self, file_path: str):
+    def _ingest_parent(self, file_path: str, table_name: str = None):
         try:
-            print(f"--- 📥 INGESTING (Parent-Child): {file_path} ---")
+            target_table = table_name if table_name else self.vector_table_name
+            print(f"--- 📥 INGESTING (Parent-Child): {file_path} into '{target_table}' ---")
             
             # 1. Load
             if file_path.endswith(".pdf"):
                 loader = PyPDFLoader(file_path)
             else:
-                loader = TextLoader(file_path)
+                # Enable autodetect_encoding to handle various text encodings
+                loader = TextLoader(file_path, autodetect_encoding=True)
             docs = loader.load()
             
-            # 2. Add to Retriever (Handles splitting & storing)
+            # 2. Prepare Retriever
+            target_retriever = self.retriever
+            
+            # If table_name is specified and different from default, create a temporary retriever
+            if table_name and table_name != self.vector_table_name:
+                vstore = LanceDB(
+                    connection=self.db,
+                    embedding=embeddings_model,
+                    table_name=table_name,
+                    mode="append"
+                )
+                # Reuse the same docstore (filesystem) but different vector table
+                target_retriever = ParentDocumentRetriever(
+                    vectorstore=vstore,
+                    docstore=self.docstore,
+                    child_splitter=self.child_splitter,
+                    parent_splitter=self.parent_splitter
+                )
+            
+            # 3. Add to Retriever (Handles splitting & storing)
             
             # SANITIZATION: Convert metadata fields to simple types for LanceDB compatibility
             # LanceDB strict schema enforcement can fail on complex types or inconsistent fields.
@@ -203,9 +243,9 @@ class NexusIngestor:
                 # Ensure source is absolute path
                 doc.metadata["source"] = os.path.abspath(file_path)
 
-            self.retriever.add_documents(docs)
+            target_retriever.add_documents(docs)
             
-            print(f"✅ Success! Ingested {len(docs)} parent docs into 'nexus_parent_child'.")
+            print(f"✅ Success! Ingested {len(docs)} parent docs into '{target_table}'.")
             return True, len(docs), os.path.abspath(file_path)
             
         except Exception as e:
