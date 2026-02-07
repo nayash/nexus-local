@@ -48,6 +48,7 @@ def search_local(query: str, file_filter: str = None) -> List[SearchResult]:
         return [SearchResult(title="System", url="local", content="No local knowledge found. Please ingest files or folders first.")]
 
     # 2. Embed the query
+    # TODO: optimize query embedding by text clean up etc.
     query_vector = embeddings_model.embed_query(query)
     
     all_results = []
@@ -58,7 +59,7 @@ def search_local(query: str, file_filter: str = None) -> List[SearchResult]:
             continue
             
         # limit=3 for global search per table (we will aggregate), limit=10 for focused
-        result_limit = 10 if file_filter else 5 
+        result_limit = 15 if file_filter else 8
         
         search_builder = tbl.search(query_vector).limit(result_limit)
         
@@ -67,10 +68,16 @@ def search_local(query: str, file_filter: str = None) -> List[SearchResult]:
             search_builder = search_builder.where(f"source = '{file_filter}'")
             
         try:
-             results = search_builder.to_list()
-             for r in results:
+            results = search_builder.to_list()
+            print('\n\n*************************************************************')
+            print(f'query: {query}, results: {len(results)}')
+            count = 1
+            for r in results:
                 r["_table"] = table_name # Track origin
                 all_results.append(r)
+                print(f'{count}> query result: src={r['metadata']['source']}, text={r['text']}, distance={r['_distance']}, table={r['_table']}')
+                count += 1
+            print('*************************************************************\n\n')
         except Exception as e:
             print(f"Error searching table {table_name}: {e}")
 

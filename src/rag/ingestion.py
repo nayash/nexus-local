@@ -108,6 +108,67 @@ class NexusIngestor:
         elif self.strategy == "parent":
             return self.retriever.invoke(query)[:k]
 
+
+    def ingest_directory(self, path: str, recursive: bool = True) -> Tuple[bool, str, Optional[str]]:
+        """
+        Ingests all supported files from a directory.
+        """
+        path = os.path.abspath(os.path.expanduser(path))
+        if not os.path.exists(path):
+            return False, "Path does not exist.", None
+            
+        if not os.path.isdir(path):
+            return False, "Path is not a directory.", None
+
+        # Sanitize table name for the folder
+        table_name = self._sanitize_table_name(os.path.basename(path))
+        print(f"--- 📂 DIRECTORY DETECTED: Will ingest into table '{table_name}' ---")
+        
+        files_to_ingest = self._find_files(path, recursive)
+        
+        if not files_to_ingest:
+            return False, "No supported files found.", None
+            
+        print(f"Total files to ingest: {len(files_to_ingest)},\n,{files_to_ingest}\n")
+        
+        total_chunks = 0
+        successful_files = 0
+        
+        for file_path in files_to_ingest:
+            success, chunks, _ = self.ingest_file(file_path, table_name=table_name)
+            if success:
+                successful_files += 1
+                total_chunks += chunks
+                
+        msg = f"Successfully ingested {successful_files} files ({total_chunks} chunks) into '{table_name}'."
+        return True, msg, None
+
+    def _find_files(self, path: str, recursive: bool) -> List[str]:
+        """
+        Finds all supported files in a directory.
+        """
+        supported_extensions = (".pdf", ".txt", ".md", ".csv", ".sh")
+        files_found = []
+        
+        if recursive:
+            for root, _, files in os.walk(path):
+                for file in files:
+                    if file.endswith(supported_extensions):
+                        files_found.append(os.path.join(root, file))
+        else:
+            for file in os.listdir(path):
+                if file.endswith(supported_extensions):
+                    files_found.append(os.path.join(path, file))
+                    
+        return files_found
+        
+    def _sanitize_table_name(self, name: str) -> str:
+        """
+        Sanitizes a string to be a valid table name.
+        """
+        sanitized = "folder_" + name.strip().replace(" ", "_").replace("-", "_").replace(".", "").lower()
+        return sanitized[:63]
+
     def _ingest_parent(self, file_path: str):
         try:
             print(f"--- 📥 INGESTING (Parent-Child): {file_path} ---")
@@ -259,51 +320,16 @@ def ingest_path(path: str, strategy: Literal["naive", "parent"] = "naive"):
     Ingests all files from a directory or a single file. (Naive strategy default)
     """
     print(f'ingesting path {path} with strategy {strategy}')
-    # Logic copied and adapted to use NexusIngestor
-    path = os.path.expanduser(path)
-    path = os.path.abspath(path)
     
-    if not os.path.exists(path):
-        return False, "Path does not exist.", None
-
-    files_to_ingest = []
-    table_name = "documents" # Default for single files
-
+    path = os.path.abspath(os.path.expanduser(path))
+    ingestor = NexusIngestor(strategy=strategy)
+    
     if os.path.isfile(path):
-        if path.endswith((".pdf", ".txt", ".md", ".csv", ".sh")):
-            files_to_ingest.append(path)
-            
+        return ingestor.ingest_file(path)
     elif os.path.isdir(path):
-        # Create a sanitized table name for the folder
-        sanitized_name = "folder_" + path.strip(os.sep).replace(os.sep, "_").replace(".", "").replace("-", "_").replace(" ", "_").lower()
-        table_name = sanitized_name[:63] 
-        print(f"--- 📂 DIRECTORY DETECTED: Will ingest into table '{table_name}' ---")
-        
-        for root, _, files in os.walk(path):
-            for file in files:
-                if file.endswith((".pdf", ".txt", ".md", ".csv", ".sh")):
-                    files_to_ingest.append(os.path.join(root, file))
-    
-    if not files_to_ingest:
-        return False, "No supported files found (.pdf, .txt, .md, .csv, .sh).", None
-
-    total_chunks = 0
-    successful_files = 0
-    
-    ingestor = NexusIngestor(strategy=strategy) # Use strategy passed in argument
-    
-    for file_path in files_to_ingest:
-        # Pass the determined table name
-        success, chunks, _ = ingestor.ingest_file(file_path, table_name=table_name)
-        if success:
-            successful_files += 1
-            total_chunks += chunks
-            
-    # For Focus Mode, if we ingested exactly one file, return its absolute path
-    final_path = os.path.abspath(files_to_ingest[0]) if len(files_to_ingest) == 1 else None
-    
-    msg = f"Successfully ingested {successful_files} files ({total_chunks} chunks) into '{table_name}'."
-    return True, msg, final_path
+        return ingestor.ingest_directory(path)
+    else:
+        return False, "Path does not exist.", None
 
 # Quick test block
 def init_knowledge():
