@@ -260,7 +260,11 @@ class ChatView(ft.Container):
                 "focused_file": self.page.data.get("focused_file")
             }
             
-            async for chunk in run_agent_stream(query, [], context):
+            # Fetch limited history for context (Sliding Window: last 20 messages)
+            history = self.repo.get_chat_history(self.current_chat_id, limit=20)
+            # Pass history[:-1] because the current 'query' is already the last item in history
+            # and run_agent_stream appends 'query' to the history it receives.
+            async for chunk in run_agent_stream(query, history[:-1], context):
                 full_response += chunk
                 # Re-parse and update the entire content of the bubble
                 bot_message_control.content = self._parse_message_content(full_response)

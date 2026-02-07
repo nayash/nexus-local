@@ -33,17 +33,22 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
     graph = get_graph()
     
     # 2. Prepare Input State
-    # For now, we assume simple append logic. 
-    # In a real app, you'd convert the Flet chat_history to LangChain messages.
-    # Here we just pass the new message, relying on the Graph's state management 
-    # (if it had persistence, which local memory graph usually doesn't across runs without a checkpointer).
-    # Since we don't have a DB checkpointer yet, we might need to pass the full history.
-    # For MVP, let's just pass the User query.
+    # Convert the DB-style chat_history to LangChain message objects
+    messages = []
+    for msg in chat_history:
+        role = msg.get("role")
+        content = msg.get("content", "")
+        if role == "user":
+            messages.append(HumanMessage(content=content))
+        elif role == "assistant":
+            messages.append(AIMessage(content=content))
+    
+    # Add the current query as the latest HumanMessage
+    messages.append(HumanMessage(content=query))
     
     inputs = {
-        "messages": [HumanMessage(content=query)],
+        "messages": messages,
         "focused_file": context.get("focused_file"),
-        # "model_name": context.get("model_name") # Now handled via UserSettings in nodes.py, but can be passed if we want overrides.
     }
     
     print(f"--- 🚀 LAUNCHING AGENT with query: {query} ---")

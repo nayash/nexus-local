@@ -81,15 +81,30 @@ class ChatRepository:
         conn.commit()
         conn.close()
 
-    def get_chat_history(self, chat_id: str) -> List[Dict]:
-        """Retrieves all messages for a specific chat."""
+    def get_chat_history(self, chat_id: str, limit: Optional[int] = None) -> List[Dict]:
+        """Retrieves messages for a specific chat, optionally limited to most recent ones."""
         conn = self._get_conn()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY created_at ASC",
-            (chat_id,)
-        )
+        
+        query = "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY created_at ASC"
+        params = [chat_id]
+        
+        if limit:
+            # We want the MOST RECENT messages, but in ASCENDING order for LangChain.
+            # So we select recent ones in DESC, then wrap it to sort back to ASC.
+            query = f"""
+                SELECT role, content FROM (
+                    SELECT role, content, created_at 
+                    FROM messages 
+                    WHERE chat_id = ? 
+                    ORDER BY created_at DESC 
+                    LIMIT ?
+                ) ORDER BY created_at ASC
+            """
+            params.append(limit)
+            
+        cursor.execute(query, params)
         rows = cursor.fetchall()
         conn.close()
         return [{"role": row["role"], "content": row["content"]} for row in rows]
