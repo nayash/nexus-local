@@ -10,6 +10,7 @@ class Sidebar(ft.Container):
         self.on_new_chat_click = on_new_chat_click
         self.on_chat_selected = on_chat_selected
         self.repo = ChatRepository()
+        self.active_chat_id = None
         
         self.width = 250
         self.bgcolor = ColorPalette.BG_SECONDARY
@@ -40,7 +41,10 @@ class Sidebar(ft.Container):
             expand=True
         )
 
-    def refresh_chats(self):
+    def refresh_chats(self, active_chat_id=None):
+        if active_chat_id is not None:
+            self.active_chat_id = active_chat_id
+            
         self.chat_list.controls.clear()
         chats = self.repo.get_recent_chats()
         for chat in chats:
@@ -69,11 +73,19 @@ class Sidebar(ft.Container):
         )
 
     def create_history_item(self, title, chat_id):
+        is_active = chat_id == self.active_chat_id
         return ft.Container(
             content=ft.Row(
                 controls=[
                     ft.Container(
-                        content=ft.Text(title, color=ColorPalette.TEXT_SECONDARY, size=13, no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS),
+                        content=ft.Text(
+                            title, 
+                            color=ColorPalette.TEXT_PRIMARY if is_active else ColorPalette.TEXT_SECONDARY, 
+                            size=13, 
+                            weight=ft.FontWeight.BOLD if is_active else ft.FontWeight.NORMAL,
+                            no_wrap=True, 
+                            overflow=ft.TextOverflow.ELLIPSIS
+                        ),
                         expand=True,
                         on_click=lambda _: self.on_chat_selected(chat_id),
                     ),
@@ -90,6 +102,7 @@ class Sidebar(ft.Container):
             ),
             padding=ft.padding.only(left=10, right=0, top=0, bottom=0),
             border_radius=5,
+            bgcolor=ColorPalette.ACCENT_SURFACE if is_active else None,
             on_hover=lambda e: self.toggle_hover(e),
             data=chat_id
         )

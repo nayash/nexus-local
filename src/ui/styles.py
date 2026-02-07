@@ -11,6 +11,7 @@ class ColorPalette:
     BORDER = "#2D3748"
     ERROR = "#EF4444"
     SUCCESS = "#10B981"
+    ACCENT_SURFACE = "#333C4D" # More distinct highlight for active items
 
 class TextStyles:
     @staticmethod

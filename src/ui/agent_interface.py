@@ -70,3 +70,38 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
                 # chunk is a BaseMessageChunk (AIMessageChunk)
                 if hasattr(chunk, "content") and chunk.content:
                     yield chunk.content
+
+        elif kind == "on_tool_end":
+            # Capture sources from tool output
+            # 1. Check for new LangChain 'artifact' field (response_format="content_and_artifact")
+            # 2. Fall back to event['output'] tuple (our custom legacy format)
+            
+            data = event.get("data", {})
+            artifact = data.get("artifact")
+            output = data.get("output")
+            
+            metadata = []
+            if artifact and isinstance(artifact, list):
+                metadata = artifact
+            elif isinstance(output, (list, tuple)) and len(output) == 2 and isinstance(output[1], list):
+                # It's our legacy (content, metadata) format
+                _, metadata = output
+            
+            if metadata:
+                # Accumulate sources
+                if "sources" not in context:
+                    context["sources"] = []
+                
+                # Add unique sources
+                for item in metadata:
+                    if item not in context["sources"]:
+                        context["sources"].append(item)
+                            
+    # Final step: If we have sources, append them to the stream
+    if context.get("sources"):
+        yield "\n\n### Sources\n"
+        for i, src in enumerate(context["sources"], 1):
+            title = src.get('title', 'Unknown')
+            url = src.get('url', '#')
+            # type_ = src.get('type', 'web') # Not displayed but useful for UI
+            yield f"{i}. [{title}]({url})\n"

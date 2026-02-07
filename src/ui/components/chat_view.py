@@ -13,6 +13,7 @@ class ChatView(ft.Container):
         super().__init__()
         self.repo = ChatRepository()
         from src.ui.managers.notification_manager import NotificationManager
+        self.notification_manager = NotificationManager
         self.current_chat_id = None
         self.on_update = on_update
         
@@ -23,6 +24,28 @@ class ChatView(ft.Container):
         self.is_processing = False
 
     def build_content(self):
+        # File Viewer Dialog
+        self.file_viewer_dialog = ft.AlertDialog(
+            title=ft.Text("File Content"),
+            content=ft.Column(
+                [
+                    ft.Markdown(
+                        "Loading...", 
+                        selectable=True, 
+                        extension_set=ft.MarkdownExtensionSet.GITHUB_WEB
+                    )
+                ],
+                scroll=ft.ScrollMode.AUTO,
+                height=400,
+                width=600
+            ),
+            actions=[
+                ft.TextButton("Close", on_click=self.close_file_viewer)
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        # self.page.dialog = self.file_viewer_dialog # Can't set page.dialog here, need page first.
+
         self.chat_history = ft.ListView(
             expand=True,
             spacing=20,
@@ -143,12 +166,19 @@ class ChatView(ft.Container):
             llm = get_cached_llm(model_name, with_tools=False)
             
             prompt = [
-                SystemMessage(content="You are a helpful assistant. Generate a short, concise title (max 4 words) for the following query. Do not use quotes."),
+                SystemMessage(content="Generate a VERY short, concise title (max 3-4 words) for the following query. Guidelines: NO quotes, NO newlines, SINGLE line only, NO rambling."),
                 HumanMessage(content=query)
             ]
             
             response = llm.invoke(prompt)
-            title = response.content.strip().replace('"', '')
+            # Post-process: strip newlines, extra spaces, and truncate
+            title = response.content.strip().split('\n')[0] # Take only the first line
+            title = re.sub(r'\s+', ' ', title)             # Normalize whitespace
+            title = title.replace('"', '').replace("'", "") # Remove quotes
+            
+            if len(title) > 40:
+                title = title[:37] + "..."
+                
             print(f"Background: Generated title '{title}'")
             
             # Update DB
@@ -157,7 +187,7 @@ class ChatView(ft.Container):
             
             if self.on_update:
                 print("Background: Triggering UI update callback...")
-                self.on_update()
+                self.on_update(chat_id)
             
         except Exception as e:
             print(f"Error generating title: {e}")
@@ -234,6 +264,8 @@ class ChatView(ft.Container):
             self.current_chat_id = self.repo.create_chat(title="New Chat")
             is_new_chat = True
             print(f"New chat created with ID: {self.current_chat_id}")
+            if self.on_update:
+                self.on_update(self.current_chat_id)
         
         # Save User Message
         self.repo.add_message(self.current_chat_id, "user", query)
@@ -312,7 +344,7 @@ class ChatView(ft.Container):
                             pre_text,
                             selectable=True,
                             extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-                            on_tap_link=lambda e: self.page.launch_url(e.data),
+                            on_tap_link=self.handle_link_click,
                         )
                     )
                 
@@ -358,7 +390,7 @@ class ChatView(ft.Container):
                                 post_text,
                                 selectable=True,
                                 extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-                                on_tap_link=lambda e: self.page.launch_url(e.data),
+                                on_tap_link=self.handle_link_click,
                             )
                         )
                 else:
@@ -396,7 +428,7 @@ class ChatView(ft.Container):
                         text,
                         selectable=True,
                         extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-                        on_tap_link=lambda e: self.page.launch_url(e.data),
+                        on_tap_link=self.handle_link_click,
                     )
                 )
         except Exception as e:
@@ -443,7 +475,47 @@ class ChatView(ft.Container):
                 NotificationManager.info(result_msg)
                 
         except Exception as ex:
-            NotificationManager.error(f"Error selecting model: {str(ex)}")
+            self.notification_manager.error(f"Error selecting model: {str(ex)}")
+
+    def handle_link_click(self, e):
+        url = e.data
+        if url.startswith("http"):
+            self.page.launch_url(url)
+        else:
+            # Assume local file path
+            self.show_file_viewer(url)
+
+    def show_file_viewer(self, file_path):
+        import os
+        if not os.path.exists(file_path):
+            self.notification_manager.error(f"File not found: {file_path}")
+            return
+
+        try:
+            filename = os.path.basename(file_path)
+            content = ""
+            
+            # Basic text reading
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()  # Read full content for viewer
+            
+            # Truncate if too huge for UI
+            if len(content) > 50000:
+                content = content[:50000] + "\n\n... [File too large, truncated] ..."
+
+            self.file_viewer_dialog.title = ft.Text(f"Viewing: {filename}")
+            self.file_viewer_dialog.content.controls[0].value = f"```\n{content}\n```"
+            
+            self.page.dialog = self.file_viewer_dialog
+            self.file_viewer_dialog.open = True
+            self.page.update()
+            
+        except Exception as ex:
+            self.notification_manager.error(f"Error reading file: {ex}")
+
+    def close_file_viewer(self, e):
+        self.file_viewer_dialog.open = False
+        self.page.update()
 
     def add_message(self, text, is_user):
         alignment = ft.MainAxisAlignment.END if is_user else ft.MainAxisAlignment.START

@@ -19,7 +19,7 @@ class AppLayout(ft.Row):
         )
         
         # Pass callback to refresh sidebar when chat title changes
-        self.chat_view = ChatView(on_update=lambda: self.sidebar.refresh_chats())
+        self.chat_view = ChatView(on_update=lambda cid: self.sidebar.refresh_chats(cid))
         self.settings_view = SettingsView(on_back_click=self.show_chat)
 
         # Initially show Chat View
@@ -43,9 +43,11 @@ class AppLayout(ft.Row):
     def handle_new_chat(self):
         """Resets the chat view for a fresh conversation."""
         self.chat_view.start_new_chat()
+        self.sidebar.refresh_chats(None)
         self.show_chat()
     
     def handle_chat_history_click(self, chat_id):
         """Loads a previous chat."""
         self.chat_view.load_chat(chat_id)
+        self.sidebar.refresh_chats(chat_id)
         self.show_chat()
