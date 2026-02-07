@@ -2,6 +2,7 @@ import flet as ft
 from components.sidebar import Sidebar
 from components.chat_view import ChatView
 from components.settings_view import SettingsView
+from components.file_viewer_view import FileViewerView
 from styles import ColorPalette
 
 class AppLayout(ft.Row):
@@ -19,8 +20,14 @@ class AppLayout(ft.Row):
         )
         
         # Pass callback to refresh sidebar when chat title changes
-        self.chat_view = ChatView(on_update=lambda cid: self.sidebar.refresh_chats(cid))
+        # Also pass reference to show_file_viewer method
+        self.chat_view = ChatView(
+            on_update=lambda cid: self.sidebar.refresh_chats(cid), 
+            page=page,
+            on_view_file=self.show_file_viewer
+        )
         self.settings_view = SettingsView(on_back_click=self.show_chat)
+        self.file_viewer_view = FileViewerView(on_back_click=self.show_chat)
 
         # Initially show Chat View
         self.active_view = self.chat_view
@@ -38,6 +45,12 @@ class AppLayout(ft.Row):
     def show_chat(self, e=None):
         self.active_view = self.chat_view # Ensure correct reference
         self.controls[-1] = self.chat_view
+        self.update()
+    
+    def show_file_viewer(self, file_path):
+        """Switch to file viewer and load the file"""
+        self.file_viewer_view.load_file(file_path)
+        self.controls[-1] = self.file_viewer_view
         self.update()
 
     def handle_new_chat(self):

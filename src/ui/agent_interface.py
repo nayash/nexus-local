@@ -80,11 +80,26 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
             artifact = data.get("artifact")
             output = data.get("output")
             
+            print(f"DEBUG TOOL END: Event keys: {data.keys()}")
+            print(f"DEBUG TOOL END: Artifact present: {artifact is not None}")
+            print(f"DEBUG TOOL END: Output type: {type(output)}")
+
             metadata = []
+            
+            # --- Artifact Handling ---
+            # 1. Direct artifact in event data (sometimes LangGraph puts it here)
             if artifact and isinstance(artifact, list):
+                print("DEBUG TOOL END: Found artifact in event data")
                 metadata = artifact
+                
+            # 2. Artifact inside ToolMessage (standard LangChain object)
+            elif hasattr(output, 'artifact') and output.artifact and isinstance(output.artifact, list):
+                print("DEBUG TOOL END: Found artifact in ToolMessage object")
+                metadata = output.artifact
+                
+            # 3. Legacy Tuple (content, metadata)
             elif isinstance(output, (list, tuple)) and len(output) == 2 and isinstance(output[1], list):
-                # It's our legacy (content, metadata) format
+                print("DEBUG TOOL END: Found legacy tuple sources")
                 _, metadata = output
             
             if metadata:
@@ -99,9 +114,16 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
                             
     # Final step: If we have sources, append them to the stream
     if context.get("sources"):
+        from urllib.parse import quote
         yield "\n\n### Sources\n"
         for i, src in enumerate(context["sources"], 1):
-            title = src.get('title', 'Unknown')
+            title = src.get('title', 'Unknown Title')
             url = src.get('url', '#')
-            # type_ = src.get('type', 'web') # Not displayed but useful for UI
+            
+            # URL-encode local file paths to handle spaces
+            # Web URLs should work as-is
+            if not url.startswith('http'):
+                # Local file - encode for Markdown
+                url = quote(url, safe='/:')
+            
             yield f"{i}. [{title}]({url})\n"

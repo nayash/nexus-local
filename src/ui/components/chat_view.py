@@ -9,8 +9,10 @@ from src.core.database import ChatRepository
 import threading
 
 class ChatView(ft.Container):
-    def __init__(self, on_update=None):
+    def __init__(self, on_update=None, page=None, on_view_file=None):
         super().__init__()
+        self.app_page = page  # Store page reference (can't use self.page, it's a Flet property)
+        self.on_view_file = on_view_file  # Callback to switch to file viewer
         self.repo = ChatRepository()
         from src.ui.managers.notification_manager import NotificationManager
         self.notification_manager = NotificationManager
@@ -43,8 +45,9 @@ class ChatView(ft.Container):
                 ft.TextButton("Close", on_click=self.close_file_viewer)
             ],
             actions_alignment=ft.MainAxisAlignment.END,
+            modal=True,  # Ensure dialog shows as modal overlay
         )
-        # self.page.dialog = self.file_viewer_dialog # Can't set page.dialog here, need page first.
+        # self.app_page.dialog = self.file_viewer_dialog # Can't set page.dialog here, need page first.
 
         self.chat_history = ft.ListView(
             expand=True,
@@ -130,7 +133,9 @@ class ChatView(ft.Container):
     
 
     def start_new_chat(self):
+        print("=== START_NEW_CHAT called ===")
         self.current_chat_id = None
+        print(f"current_chat_id set to: {self.current_chat_id}")
         self.chat_history.controls.clear()
         self.add_message("Nexus is ready. Ask me anything.", is_user=False)
         self.chat_history.update()
@@ -155,31 +160,49 @@ class ChatView(ft.Container):
         """
         Background task to generate a short title for the chat using the LLM.
         """
+        import re  # Import re module for regex operations
         try:
             print(f"Background: Generating title for chat {chat_id} with query '{query}'")
-            from src.agents.nodes import get_cached_llm
-            from langchain_core.messages import SystemMessage, HumanMessage
+            try:
+                from src.agents.nodes import get_cached_llm
+                from langchain_core.messages import SystemMessage, HumanMessage
+            except ImportError as ie:
+                print(f"Background: ERROR importing LLM/LangChain: {ie}")
+                return
+
+            print("Background: Imports successful. Getting LLM...")
             
             # Use a fast model if available, or just the current one
             model_name = get_setting("model_name", "llama3.1")
             print(f"Background: Using model {model_name} for title creation")
             llm = get_cached_llm(model_name, with_tools=False)
+            print("Background: LLM acquired. Invoking...")
             
             prompt = [
-                SystemMessage(content="Generate a VERY short, concise title (max 3-4 words) for the following query. Guidelines: NO quotes, NO newlines, SINGLE line only, NO rambling."),
-                HumanMessage(content=query)
+                SystemMessage(content="You are a title generator. Generate ONLY a very short title (3-5 words maximum) that summarizes what the user is asking about. DO NOT answer the question, DO NOT explain anything, ONLY output the title. No quotes, no newlines, just the title."),
+                HumanMessage(content=f"Generate a short title for this user query: {query}")
             ]
             
             response = llm.invoke(prompt)
-            # Post-process: strip newlines, extra spaces, and truncate
-            title = response.content.strip().split('\n')[0] # Take only the first line
-            title = re.sub(r'\s+', ' ', title)             # Normalize whitespace
-            title = title.replace('"', '').replace("'", "") # Remove quotes
+            print(f"Background: Raw title response: '{response.content}'")
             
-            if len(title) > 40:
-                title = title[:37] + "..."
+            try:
+                # Post-process: strip newlines, extra spaces, and truncate
+                content = response.content or ""
+                title_line = content.strip().split('\n')[0]
+                if not title_line:
+                    title_line = "New Chat"
                 
-            print(f"Background: Generated title '{title}'")
+                title = re.sub(r'\s+', ' ', title_line)             # Normalize whitespace
+                title = title.replace('"', '').replace("'", "") # Remove quotes
+                
+                if len(title) > 40:
+                    title = title[:37] + "..."
+            except Exception as e:
+                print(f"Background: Error processing title '{response.content}': {e}")
+                title = "New Chat"
+                
+            print(f"Background: Final title '{title}'")
             
             # Update DB
             self.repo.update_chat_title(chat_id, title)
@@ -206,7 +229,7 @@ class ChatView(ft.Container):
                 success, msg, _ = ingest_file(file_path, table_name="documents")
                 
                 if success:
-                    self.page.data["focused_file"] = file_path
+                    self.app_page.data["focused_file"] = file_path
                     self.update_focus_ui(file_path)
                     NotificationManager.success("Focused! Agent will only search this file.")
                 else:
@@ -216,7 +239,7 @@ class ChatView(ft.Container):
              print(f"Error in attach: {ex}")
 
     def clear_focus(self, e):
-        self.page.data["focused_file"] = None
+        self.app_page.data["focused_file"] = None
         self.update_focus_ui(None)
         NotificationManager.info("Focus cleared. Searching all knowledge.")
 
@@ -258,23 +281,40 @@ class ChatView(ft.Container):
         self.input_field.update()
         
         # --- Persistence Start ---
+        print(f"\n=== SEND_MESSAGE: current_chat_id at start: {self.current_chat_id} ===")
         is_new_chat = False
         if not self.current_chat_id:
-            print("Creating new chat session...")
+            print(">>> Creating new chat session...")
             self.current_chat_id = self.repo.create_chat(title="New Chat")
             is_new_chat = True
-            print(f"New chat created with ID: {self.current_chat_id}")
+            print(f">>> New chat created with ID: {self.current_chat_id}")
+            print(f">>> is_new_chat: {is_new_chat}")
             if self.on_update:
+                print(">>> Calling on_update callback")
                 self.on_update(self.current_chat_id)
         
         # Save User Message
         self.repo.add_message(self.current_chat_id, "user", query)
         print(f"Saved user message to DB for chat {self.current_chat_id}")
         
-        # Trigger renaming if new chat
+        # Trigger renaming on first message of a new chat
+        print(f"\n>>> Checking renaming trigger: is_new_chat={is_new_chat}")
         if is_new_chat:
-            print("Starting background title generation thread...")
-            threading.Thread(target=self._generate_title_async, args=(self.current_chat_id, query), daemon=True).start()
+            print(f">>> YES - Starting title generation thread for chat {self.current_chat_id}")
+            try:
+                thread = threading.Thread(
+                    target=self._generate_title_async, 
+                    args=(self.current_chat_id, query), 
+                    daemon=True
+                )
+                thread.start()
+                print(f">>> Thread started successfully: {thread}")
+            except Exception as e:
+                print(f">>> ERROR starting title generation thread: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print(f">>> NO - Skipping renaming (not a new chat)")
         # --- Persistence End ---
 
         # 1. Show User Message
@@ -289,7 +329,7 @@ class ChatView(ft.Container):
         try:
             # Prepare context (include focused_file if available in page.data)
             context = {
-                "focused_file": self.page.data.get("focused_file")
+                "focused_file": self.app_page.data.get("focused_file")
             }
             
             # Fetch limited history for context (Sliding Window: last 20 messages)
@@ -468,7 +508,7 @@ class ChatView(ft.Container):
             print(f'Result of model selection: {result_msg}')
             
             if "ready" in result_msg:
-                self.page.data["model_name"] = model_name
+                self.app_page.data["model_name"] = model_name
                 save_setting("model_name", model_name)
                 NotificationManager.success(f"Model {model_name} ready.")
             else:
@@ -478,44 +518,35 @@ class ChatView(ft.Container):
             self.notification_manager.error(f"Error selecting model: {str(ex)}")
 
     def handle_link_click(self, e):
+        print(f"\n=== HANDLE_LINK_CLICK called ===")
+        print(f"Raw URL from event: '{e.data}'")
+        from urllib.parse import unquote
+        import webbrowser
         url = e.data
         if url.startswith("http"):
-            self.page.launch_url(url)
+            print(f"Web URL detected, launching: {url}")
+            webbrowser.open(url)
         else:
-            # Assume local file path
-            self.show_file_viewer(url)
+            # Local file path - decode URL encoding
+            file_path = unquote(url)
+            print(f"Local file detected, decoded path: '{file_path}'")
+            self.show_file_viewer(file_path)
 
     def show_file_viewer(self, file_path):
-        import os
-        if not os.path.exists(file_path):
-            self.notification_manager.error(f"File not found: {file_path}")
+        """Show file content using the full-page viewer"""
+        print(f"\n=== SHOW_FILE_VIEWER called with: '{file_path}' ===")
+        
+        if not self.on_view_file:
+            print("ERROR: on_view_file callback is None! Cannot show file.")
             return
-
-        try:
-            filename = os.path.basename(file_path)
-            content = ""
-            
-            # Basic text reading
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()  # Read full content for viewer
-            
-            # Truncate if too huge for UI
-            if len(content) > 50000:
-                content = content[:50000] + "\n\n... [File too large, truncated] ..."
-
-            self.file_viewer_dialog.title = ft.Text(f"Viewing: {filename}")
-            self.file_viewer_dialog.content.controls[0].value = f"```\n{content}\n```"
-            
-            self.page.dialog = self.file_viewer_dialog
-            self.file_viewer_dialog.open = True
-            self.page.update()
-            
-        except Exception as ex:
-            self.notification_manager.error(f"Error reading file: {ex}")
+        
+        print(f"Calling on_view_file callback...")
+        self.on_view_file(file_path)
+        print("File viewer should be visible now!")
 
     def close_file_viewer(self, e):
         self.file_viewer_dialog.open = False
-        self.page.update()
+        self.app_page.update()
 
     def add_message(self, text, is_user):
         alignment = ft.MainAxisAlignment.END if is_user else ft.MainAxisAlignment.START
