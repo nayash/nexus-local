@@ -51,9 +51,18 @@ def local_search_tool(query: str, file_filter: str = None):
     """
     print(f'calling search_local with query: {query} and file_filter: {file_filter}')
     results = search_local(query, file_filter)
+    
     # Increase context budget for focused search to 15,000 chars
-    context_budget = 15000 if file_filter else 5000
-    return mini_rag_filter("\n\n".join([r.to_context_string() for r in results]), query, max_chars=context_budget)
+    context_budget = 15000 if file_filter else 10000
+    context_str = "\n\n".join([r.to_context_string() for r in results])
+    
+    # OPTIMIZATION: For local search (especially parent strategy), we bypass mini_rag_filter.
+    # Paragraph-level keyword filtering often breaks the cohesive context retrieved by the 
+    # parent strategy. We use simple truncation as a safety measure instead.
+    if len(context_str) > context_budget:
+        return context_str[:context_budget] + "\n\n... [Content truncated to fit context window] ..."
+        
+    return context_str
 
 @tool
 def get_current_time():
