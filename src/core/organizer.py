@@ -111,20 +111,27 @@ class Organizer:
     def _categorize_file(self, filename: str, content: str, existing_folders: str) -> str:
         prompt = ChatPromptTemplate.from_template(
             """
-            Analyze the following file to determine the best folder category.
+            You are an expert file librarian. Analyze the following file to determine the best semantic folder category.
             
             Filename: {filename}
-            Content Snippet:
+            Content Snippet (First 2KB):
             {content}
             
             Existing Categories: {existing_folders}
             
             Rules:
-            1. Return ONLY the category name. No markdown, no explanations.
-            2. Use an existing category if it fits well.
-            3. If no existing category fits, create a new short, descriptive, CamelCase or SnakeCase name.
-            4. If the content is garbage or unclear, return '_Unsorted'.
-            5. Keep it flat (Depth=1).
+            1. Categorize based on CONTENT TYPE & file names if it's meaningful (e.g., 'Invoices', 'ResearchPapers', 'Logs', 'Contracts' etc.), NOT file format (e.g., 'PDFs', 'TextFiles').
+            2. BANNED CATEGORIES (Do NOT use these): 'Documents', 'Files', 'Data', 'General', 'Misc', 'Others', 'Documentation'.
+            3. Use an existing category ONLY if it is a PERFECT semantic match. Otherwise, create a new specific one.
+            4. Format: CamelCase (e.g., 'ResearchPapers', 'LegalDocs', 'ServerLogs').
+            5. Return ONLY the category name. No markdown.
+            
+            Examples:
+            - Content is an academic paper -> 'ResearchPapers'
+            - Content is a receipt/bill -> 'Invoices'
+            - Content is a python script -> 'Scripts'
+            - Content is a server log -> 'Logs'
+            - Content is an insurance policy -> 'InsuranceDocs'
             """
         )
         chain = prompt | self.llm | StrOutputParser()
