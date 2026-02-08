@@ -185,13 +185,14 @@ class Organizer:
             
             RULES:
             1. You MUST choose from the Allowed Categories list. Do not invent new ones.
-            2. If the file is code (py, js, sh, or other common code extension), choose 'Development'.
-            3. If the file is a log or data dump (json, csv, or based on filename & content), choose 'DataLogs'.
-            4. If the file is an invoice, receipt, or bill, choose 'Finance'.
-            5. If the file is an academic paper or manual, choose 'TechDocs' or 'BooksLibrary'.
-            6. If the file is user's personal document like aadhar card, pan card, passport, etc., choose 'IdentityPersonal'.
-            6. If uncertain, unclear, or garbage, choose 'Unsorted'.
-            7. Output ONLY the category name.
+            2. CONSIDER the file content AND filename (if it is meaningful) to decide the category.
+            3. If the file is source code (py, js, sh, or other common code extension), choose 'Development'.
+            4. If the file is a log or data dump (json, csv, txt, log, etc.), choose 'DataLogs'.
+            5. If the file is an invoice, receipt, or bill, choose 'Finance'.
+            6. If the file is an academic paper or manual (txt, pdf, doc, docx, etc.), choose 'TechDocs' or 'BooksLibrary'.
+            7. If the file is user's personal document like aadhar card, pan card, passport, etc., choose 'IdentityPersonal'.
+            8. If uncertain, unclear, or garbage, choose 'Unsorted'.
+            9. Output ONLY the category name.
             
             YOUR CHOICE:
             """
