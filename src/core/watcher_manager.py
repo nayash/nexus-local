@@ -5,7 +5,7 @@ from typing import List, Dict, Tuple
 from src.core.database import WatchedPathsRepository
 from src.core.services.watcher import WatcherService
 from src.rag.ingestion import ingest_path, NexusIngestor
-from src.rag.storage import get_db_connection, get_table
+from src.rag.storage import get_db_connection, get_table, get_source_field_for_table
 
 class WatcherManager:
     """
@@ -51,6 +51,9 @@ class WatcherManager:
             for tbl_name in tables_to_check:
                 tbl = get_table(tbl_name)
                 if tbl:
+                    # Determine correct field for source path
+                    source_field = get_source_field_for_table(tbl)
+                    
                     # LanceDB delete syntax: "source LIKE 'path%'" matches directory
                     # Note: source is absolute path.
                     # We want to delete everything starting with this path.
@@ -64,11 +67,11 @@ class WatcherManager:
                     # LanceDB SQL filter support is limited, but string matching works.
                     # "source LIKE '...%'"
                     
-                    filter_query = f"source LIKE '{escape_path}%'"
+                    filter_query = f"{source_field} LIKE '{escape_path}%'"
 
                     count = tbl.count_rows(filter_query)
                     tbl.delete(filter_query)
-                    print(f"Purged {count} records from '{tbl_name}' matching '{path}'")
+                    print(f"Purged {count} records from '{tbl_name}' matching '{path}' in field '{source_field}'")
 
 
         except Exception as e:

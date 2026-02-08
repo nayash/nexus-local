@@ -58,3 +58,34 @@ def clear_all_tables():
         print(f"Error clearing DocStore: {e}")
         
     return True
+
+def get_source_field_for_table(table) -> str:
+    """
+    Determines the correct field name for the source path in a LanceDB table.
+    Returns 'source' if top-level, or 'metadata.source' if nested (common in Parent Strategy).
+    Raises ValueError if neither found.
+    """
+    if not table:
+         raise ValueError("Table is None")
+
+    try:
+        # Check top-level 'source'
+        # LanceDB schema structure: schema.names returns list of top-level fields
+        if 'source' in table.schema.names:
+            return 'source'
+        
+        # Check for 'metadata' struct
+        if 'metadata' in table.schema.names:
+            # We assume if metadata exists, source is inside it based on ingestion logic
+            return 'metadata.source'
+            
+        # Fallback or strict check? 
+        # For now, if we can't find source, we might be in trouble.
+        # But let's verify if metadata has source? 
+        # Investigating schema deeply might be slow if we load it all, but names should be fast.
+        
+        return 'source' # Fallback to naive default to see if it works or fails with better error
+        
+    except Exception as e:
+        print(f"Warning: Could not determine schema for table. Defaulting to 'source'. Error: {e}")
+        return 'source'

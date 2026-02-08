@@ -8,7 +8,8 @@ from langchain_core.output_parsers import StrOutputParser
 from src.core.config import Config
 from src.rag.ingestion import ingest_file
 from src.core.database import WatchedPathsRepository, ChatRepository # Just to be safe, though not needed directly here yet
-from src.rag.storage import get_db_connection, get_table
+from src.rag.storage import get_db_connection, get_table, get_source_field_for_table
+
 
 class Organizer:
     """
@@ -79,10 +80,17 @@ class Organizer:
                 try:
                     tbl = get_table(table_name)
                     if tbl:
+                        source_field = get_source_field_for_table(tbl)
                         # Escape single quotes for filter
                         escaped_old_path = file_path.replace("'", "''")
-                        tbl.delete(f"source = '{escaped_old_path}'")
-                        print(f"Deleted old record for '{file_path}' from '{table_name}'")
+                        # Count records before deletion to report accurately
+                        filter_expr = f"{source_field} = '{escaped_old_path}'"
+                        results = tbl.search().where(filter_expr).limit(None).to_list()
+                        deleted_count = len(results)
+
+                        tbl.delete(filter_expr)
+
+                        print(f"Deleted {deleted_count} record(s) for '{file_path}' from '{table_name}' using field '{source_field}'")
                 except Exception as e:
                     print(f"Failed to delete old record: {e}")
 
@@ -147,51 +155,71 @@ class Organizer:
         return ", ".join(folders)
 
     def _categorize_file(self, filename: str, content: str, existing_folders: str) -> str:
-        # Fallback if content is empty or unreadable
+        # Fallback for empty/garbage content
         if not content or len(content) < 10:
-            content = "[Content unreadable/empty. RELY ON FILENAME ALONE]"
+            content = "[Content unreadable. RELY ON FILENAME ALONE]"
+
+        # The Fixed Taxonomy
+        categories = [
+            "Finance", "LegalContracts", "IdentityPersonal", "WorkDocuments", "Correspondence",
+            "Development", "DataLogs", "TechDocs", "KeySecrets", "InstallersSoftware",
+            "Images", "AudioVideo", "CreativeAssets",
+            "BooksLibrary", "Travel", "Education", "Archives", "Unsorted"
+        ]
+        
+        category_list_str = ", ".join(categories)
 
         prompt = ChatPromptTemplate.from_template(
             """
-            You are a strict data organizer. Your ONLY job is to output a single Category Name.
+            You are a file sorting engine.
             
-            Task: Categorize the file below into a concise folder name.
+            Task: Assign the file to ONE of the Allowed Categories below.
             
-            CONTEXT:
+            ALLOWED CATEGORIES:
+            [{category_list}]
+            
+            FILE CONTEXT:
             Filename: {filename}
             Content Snippet:
             {content}
             
-            Existing Categories: {existing_folders}
+            RULES:
+            1. You MUST choose from the Allowed Categories list. Do not invent new ones.
+            2. If the file is code (py, js, sh, or other common code extension), choose 'Development'.
+            3. If the file is a log or data dump (json, csv, or based on filename & content), choose 'DataLogs'.
+            4. If the file is an invoice, receipt, or bill, choose 'Finance'.
+            5. If the file is an academic paper or manual, choose 'TechDocs' or 'BooksLibrary'.
+            6. If the file is user's personal document like aadhar card, pan card, passport, etc., choose 'IdentityPersonal'.
+            6. If uncertain, unclear, or garbage, choose 'Unsorted'.
+            7. Output ONLY the category name.
             
-            STRICT RULES:
-            1. Output EXACTLY ONE WORD (CamelCase).
-            2. NO explanations. NO headers. NO "I think...". NO markdown.
-            3. If the content snippet is garbage or empty, categorize based strictly on the Filename.
-            4. Prioritize existing categories if they are a strong match.
-            5. BANNED: 'Documents', 'Files', 'General', 'Misc', 'Data'.
-            
-            EXAMPLES:
-            - 'invoice_2024.pdf' -> Invoices
-            - 'app.py' -> Scripts
-            - 'meeting_notes.txt' -> Notes
-            - 'unknown_file.xyz' -> _Unsorted
-            
-            YOUR RESPONSE (One Word Only):
+            YOUR CHOICE:
             """
         )
-        print(f'Analyzying: {filename}, content: {content}, existing_folders: {existing_folders}') # Optional debug
 
         chain = prompt | self.llm | StrOutputParser()
         
         try:
             response = chain.invoke({
+                "category_list": category_list_str,
                 "filename": filename,
-                "content": content,
-                "existing_folders": existing_folders
+                "content": content
             })
-            print(f'LLM category Response: {response}') # Debug
-            return self._parse_category_from_response(response)
+            
+            # Simple cleanup to ensure it picked a valid one
+            cleaned = response.strip().replace("'", "").replace('"', "")
+            
+            # Validation: If LLM hallucinated, force Unsorted
+            # (Fuzzy match could be added here, but exact match is safer for now)
+            if cleaned not in categories:
+                # Try to find a partial match (e.g., LLM said "Category: Finance")
+                for valid_cat in categories:
+                    if valid_cat in cleaned:
+                        return valid_cat
+                return "_Unsorted"
+                
+            return cleaned
+            
         except Exception as e:
             print(f"LLM Categorization failed: {e}")
             return "_Unsorted"
