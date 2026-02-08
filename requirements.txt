@@ -27,3 +27,6 @@ langgraph
 
 # File Watching
 watchdog
+
+# Parser
+lark

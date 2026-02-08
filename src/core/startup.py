@@ -109,7 +109,7 @@ class StartupManager:
         required_deps = [
             "flet", "langgraph", "ddgs", 
             "lancedb", "pypdf", "pandas",
-            "watchdog"
+            "watchdog", "lark"
         ]
         try:
             # We just try functionality or just existence? 
@@ -125,6 +125,7 @@ class StartupManager:
             import watchdog
             import requests
             import pydantic
+            import lark
 
             return True
         except ImportError as e:

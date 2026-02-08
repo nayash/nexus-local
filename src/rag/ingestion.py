@@ -1,7 +1,7 @@
 import os
 import shutil
 from typing import List, Literal, Optional, Tuple, Any
-from langchain_ollama import OllamaEmbeddings
+from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_classic.retrievers import ParentDocumentRetriever
@@ -12,8 +12,15 @@ from langchain_classic.storage import EncoderBackedStore
 from langchain_core.documents import Document
 import pickle
 
+import pwd
+from typing import List, Tuple, Optional, Literal, Dict, Any
+
 from src.core.config import Config
-from src.rag.storage import get_db_connection, get_table
+from src.rag.storage import get_db_connection, get_table, ensure_table_has_core_fields
+
+from langchain_classic.chains.query_constructor.base import AttributeInfo
+from langchain_classic.retrievers.self_query.base import SelfQueryRetriever
+from langchain_classic.chains.query_constructor.base import load_query_constructor_runnable
 
 # Initialize the lightweight embedding model
 embeddings_model = OllamaEmbeddings(
@@ -36,6 +43,13 @@ class NexusIngestor:
         # Ensure docstore directory exists
         if not os.path.exists(self.docstore_path):
             os.makedirs(self.docstore_path)
+
+        # Initialize LLM for Self-Query and other tasks
+        self.llm = ChatOllama(
+            model=Config.OLLAMA_MODEL, 
+            temperature=0,
+            base_url=Config.OLLAMA_BASE_URL
+        )
 
         # Initialize components for Parent Document Retrieval
         if self.strategy == "parent":
@@ -114,6 +128,8 @@ class NexusIngestor:
                         embedding=embeddings_model,
                         table_name=table_name
                      )
+                     # For temporary tables, we just do semantic search for now
+                     # Implementing full self-query here is possible but let's stick to main table first
                      temp_retriever = ParentDocumentRetriever(
                         vectorstore=vstore,
                         docstore=self.docstore,
@@ -122,9 +138,131 @@ class NexusIngestor:
                      )
                      return temp_retriever.invoke(query)[:k]
                  except Exception:
-                     # Fallback or empty if table doesn't exist
                      return []
 
+            return self._search_with_filter(query, k)
+
+    def _search_with_filter(self, query: str, k: int = 5) -> List[Document]:
+        """
+        Enhanced search with metadata filtering using SelfQueryRetriever logic.
+        """
+        try:
+            # 1. Define Metadata Schema
+            metadata_field_info = [
+                AttributeInfo(
+                    name="author",
+                    description="The author or owner of the file (e.g. 'alex', 'root').",
+                    type="string",
+                ),
+                AttributeInfo(
+                    name="title",
+                    description="The title of the document.",
+                    type="string",
+                ),
+                AttributeInfo(
+                    name="source",
+                    description="The file path source of the document.",
+                    type="string",
+                ),
+                AttributeInfo(
+                    name="year",
+                    description="The year of creation.",
+                    type="integer",
+                ),
+                AttributeInfo(
+                    name="page",
+                    description="The page number.",
+                    type="integer",
+                ),
+            ]
+            
+            document_content_description = "A collection of user's personal files, code, documents, and reports."
+
+            # 2. Construct Query Compiler
+            # We use a Chat Model (LLM) to parse natural language queries into structured filters.
+            
+            # Use pre-initialized LLM
+            query_constructor = load_query_constructor_runnable(
+                llm=self.llm,
+                document_contents=document_content_description,
+                attribute_info=metadata_field_info,
+            )
+
+            # 3. Parse Query
+            structured_query = query_constructor.invoke({"query": query})
+            
+            # 4. Check if filter exists
+            # structured_query is a StructuredQuery object with 'filter' attribute
+            if structured_query.filter:
+                print(f"--- 🔍 DETECTED FILTER: {structured_query.filter} ---")
+                
+                # 5. Translate to VectorStore filter format
+                # LanceDB (via LangChain) uses specific filter format (SQL-like usually)
+                # But LangChain's SelfQueryRetriever translator for LanceDB might handle it?
+                # We need a Translator.
+                from langchain.retrievers.self_query.lancedb import LanceDBTranslator
+                translator = LanceDBTranslator()
+                
+                # Visit to get native filter (kwargs)
+                filter_kwargs = translator.visit_structured_query(structured_query)
+                # output is usually (filter_str, kwargs) or just filter
+                
+                # For LanceDB translator in LangChain community:
+                # It returns a dictionary `{'where': 'sql_string'}` or similar?
+                # Let's verify standard interface: visit_structured_query returns the filter argument value.
+                
+                # If filter_kwargs is a tuple, extract filter
+                native_filter = filter_kwargs[0] if isinstance(filter_kwargs, tuple) else filter_kwargs
+                
+                print(f"Applying LanceDB Filter: {native_filter}")
+                
+                # 6. Execute Search with Filter
+                # We use the wrapper's vectorstore.similarity_search directly?
+                # But we want Child chunks -> Parent Docs.
+                # ParentDocumentRetriever doesn't support passing 'filter' in invoke easily.
+                # BUT, self.retriever.vectorstore IS the LanceDB instance.
+                # Providing pre_filter to it?
+                
+                # HACK / WORKAROUND:
+                # We directly search the vectorstore for children with the filter.
+                # Then we map children to parents manually using docstore.
+                
+                children = self.vectorstore.similarity_search(
+                    query, 
+                    k=k*2, # Fetch more children to ensure we get enough parents
+                    filter=native_filter # 'filter' kwarg for LanceDB
+                )
+                
+                # Map to parents
+                parent_ids = set()
+                final_docs = []
+                for child in children:
+                    parent_id = child.metadata.get("doc_id") # Parent splitter sets doc_id? 
+                    # ParentDocumentRetriever uses 'doc_id' key by default.
+                    if parent_id and parent_id not in parent_ids:
+                        parent_doc = self.docstore.yield_keys([parent_id]) # yield_keys returns iterator
+                        # wait, docstore.mget([id])?
+                        # EncoderBackedStore: mget
+                        
+                        try:
+                            parent = self.docstore.mget([parent_id])[0]
+                            if parent:
+                                final_docs.append(parent)
+                                parent_ids.add(parent_id)
+                        except Exception:
+                            pass
+                            
+                        if len(final_docs) >= k:
+                            break
+                            
+                return final_docs
+                
+            else:
+                # No filter, normal Search
+                return self.retriever.invoke(query)[:k]
+
+        except Exception as e:
+            print(f"Self-Query failed, falling back to semantic search. Error: {e}")
             return self.retriever.invoke(query)[:k]
 
 
@@ -190,6 +328,15 @@ class NexusIngestor:
         sanitized = "folder_" + name.strip().replace(" ", "_").replace("-", "_").replace(".", "").lower()
         return sanitized[:63]
 
+    def _get_file_owner(self, path: str) -> str:
+        """
+        Gets the username of the file owner.
+        """
+        try:
+            return pwd.getpwuid(os.stat(path).st_uid).pw_name
+        except Exception:
+            return "unknown"
+
     def _ingest_parent(self, file_path: str, table_name: str = None):
         try:
             target_table = table_name if table_name else self.vector_table_name
@@ -224,25 +371,74 @@ class NexusIngestor:
             
             # 3. Add to Retriever (Handles splitting & storing)
             
-            # SANITIZATION: Convert metadata fields to simple types for LanceDB compatibility
-            # LanceDB strict schema enforcement can fail on complex types or inconsistent fields.
+            # SCHEMA MIGRATION: Ensure table has 'author' and 'extra_metadata'
+            # We access the table object from the vectorstore wrapper.
+            # LangChain LanceDB wrapper stores table in self.vectorstore._table (internal) 
+            # OR we can get it again from storage to be safe/clean.
+            # But wait, LangChain wrapper opens table on demand sometimes.
+            # Let's try to get it from our own storage util since we created the vstore with it potentially.
+            
+            try:
+                # We need the underlying LanceDB table object to modify schema
+                real_table = get_table(target_table)
+                ensure_table_has_core_fields(real_table)
+            except Exception as e:
+                print(f"Warning during schema check: {e}")
+
+            import json
+
+            # CORE FIELDS are those we want explicit columns for (plus vector/text/id/source)
+            # 'source' is inserted manually later.
+            CORE_FIELDS = {'title', 'author', 'year', 'page', 'id', 'source', 'creationdate', 'creator', 'producer', 'moddate'}
+            # We expand core fields a bit to match common PDF fields to reduce JSON packing churn
+            # But user asked specifically for author + json extras.
+            # Let's keep it strict to what we verified: author is core.
+            # Let's stick to the plan: author + extra_metadata. 
+            # But wait, 'page' and 'source' are standard.
+            
+            KEEP_AS_COLUMNS = {'author', 'page', 'source', 'title'} 
+
             for doc in docs:
+                # 1. Author Fallback
+                if 'author' not in doc.metadata or not doc.metadata['author']:
+                    doc.metadata['author'] = self._get_file_owner(file_path)
+
+                # 2. Metadata Packing
+                extra_metadata = {}
                 keys_to_remove = []
-                for key, value in doc.metadata.items():
-                    # 1. Remove None values (can cause schema issues)
+                
+                # Check for existing keys
+                for key, value in list(doc.metadata.items()):
+                    # Basic sanitization for all values
                     if value is None:
                         keys_to_remove.append(key)
                         continue
-                    
-                    # 2. Convert complex types to strings (e.g. dates) to preserve data without breaking schema
-                    # We keep basic types (str, int, float, bool) and stringify everything else
+                        
+                    # Clean strings
                     if not isinstance(value, (str, int, float, bool)):
-                        doc.metadata[key] = str(value)
+                        str_val = str(value)
+                        doc.metadata[key] = str_val
+                        value = str_val
 
+                    # If key is NOT a core column, move to extras
+                    # We also check if it's already in the table schema? 
+                    # For now, strict hybrid approach: if not in KEEP_AS_COLUMNS, pack it.
+                    # Exception: If the table ALREADY has this column, do we keep it?
+                    # That would be ideal (evolution).
+                    # But simpler is to pack everything else into 'extra_metadata'.
+                    
+                    if key not in KEEP_AS_COLUMNS:
+                        extra_metadata[key] = value
+                        keys_to_remove.append(key)
+                
+                # Apply removal
                 for key in keys_to_remove:
                     doc.metadata.pop(key, None)
-                    
-                # Ensure source is absolute path
+                
+                # Add the packed extras
+                doc.metadata['extra_metadata'] = json.dumps(extra_metadata)
+                
+                # Ensure source is absolute path (Critical)
                 doc.metadata["source"] = os.path.abspath(file_path)
 
             target_retriever.add_documents(docs)

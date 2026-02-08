@@ -14,5 +14,6 @@ class Config:
     TIMEOUT = 10
     SEARXNG_BASE_URL = "http://localhost:8080"
     OLLAMA_BASE_URL = "http://localhost:11434"
+    OLLAMA_MODEL = "llama3.1"
     LANCEDB_PATH = os.path.join(PROJECT_ROOT, "data", "lancedb")
     SQLITE_PATH = os.path.join(PROJECT_ROOT, "data", "sqlite", "nexus.db")

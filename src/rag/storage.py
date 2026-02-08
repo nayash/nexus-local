@@ -89,3 +89,41 @@ def get_source_field_for_table(table) -> str:
     except Exception as e:
         print(f"Warning: Could not determine schema for table. Defaulting to 'source'. Error: {e}")
         return 'source'
+
+def ensure_table_has_core_fields(table):
+    """
+    Checks if the table has the core metadata fields 'author' and 'extra_metadata'.
+    If not, adds them with default values.
+    """
+    if not table:
+        return
+
+    try:
+        # Check if fields exist in schema (top-level or inside metadata?)
+        # With Parent Strategy, metadata is usually a struct.
+        # But for evolving schema, we might add them as top-level columns if we can, 
+        # OR we need to evolve the 'metadata' struct itself (harder).
+        # Let's assume we want them available directly for querying?
+        # OR if the table uses 'metadata' struct, we should probably add them inside there?
+        # NO, LanceDB python add_columns adds top level columns.
+        # Mixing top-level and struct is fine.
+        
+        existing_cols = table.schema.names
+        new_cols = {}
+        
+        # We want 'author' and 'extra_metadata' to be available.
+        # If they are not in schema, we add them.
+        
+        if "author" not in existing_cols:
+            # Add 'author' column
+            new_cols["author"] = "cast('Unknown' as string)" # SQL expression for default value
+            
+        if "extra_metadata" not in existing_cols:
+            new_cols["extra_metadata"] = "cast('{}' as string)"
+            
+        if new_cols:
+            print(f"--- 🔄 MIGRATING SCHEMA: Adding columns {list(new_cols.keys())} ---")
+            table.add_columns(new_cols)
+            
+    except Exception as e:
+        print(f"Warning: Schema migration failed: {e}")
