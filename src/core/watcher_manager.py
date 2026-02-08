@@ -65,40 +65,59 @@ class WatcherManager:
                     # "source LIKE '...%'"
                     
                     filter_query = f"source LIKE '{escape_path}%'"
+
+                    count = tbl.count_rows(filter_query)
                     tbl.delete(filter_query)
-                    print(f"Purged records from '{tbl_name}' matching '{path}'")
+                    print(f"Purged {count} records from '{tbl_name}' matching '{path}'")
+
 
         except Exception as e:
             print(f"Warning: Purge step encountered error (non-fatal): {e}")
 
         # 3. CREATE: Generate dedicated table name
-        # We use the sanitizer from Ingestor or just make one here.
         safe_name = "watched_" + os.path.basename(path).strip().replace(" ", "_").lower()
-        # Append hash to ensure uniqueness
         safe_name = f"{safe_name}_{uuid.uuid4().hex[:8]}"
-        
-        # 4. INGEST: Initial full ingestion
-        print(f"--- 📥 INITIALIZING WATCHED FOLDER: {path} -> {safe_name} ---")
-        try:
-            # We use 'parent' strategy by default for watched folders as it's better.
-            ingestor = NexusIngestor(strategy="parent")
-            
-            # Ingest directory with custom table name
-            ingestor.ingest_directory(path, recursive=True, table_name=safe_name)
-            
-        except Exception as e:
-            return False, f"Ingestion failed: {str(e)}"
 
-        # 5. RECORD: Save to DB
+        # 4. RECORD: Save to DB (Must be before organization for repo lookups)
         try:
             self.repo.add_watched_path(path, safe_name, strategy="organize_and_ingest")
         except Exception as e:
             return False, f"Database save failed: {str(e)}"
+        
+        # 5. INITIAL ORGANIZE & INGEST
+        print(f"--- 📥 INITIALIZING WATCHED FOLDER: {path} -> {safe_name} ---")
+        try:
+            # Semantically organize existing top-level files
+            self._organize_existing_files(path, safe_name)
+            
+            # Then perform full ingestion for the remaining structure (subfolders etc)
+            ingestor = NexusIngestor(strategy="parent")
+            ingestor.ingest_directory(path, recursive=True, table_name=safe_name)
+            
+        except Exception as e:
+            # Rollback DB if possible? For now just log and continue
+            print(f"Initialization organization/ingestion error: {str(e)}")
 
         # 6. START: Start watching
         self.service.watch_path(path)
         
         return True, f"Successfully started watching '{os.path.basename(path)}'"
+
+    def _organize_existing_files(self, root_path: str, table_name: str):
+        """
+        Scans the root of a newly watched folder and organizes top-level files.
+        """
+        print(f"--- 🧠 INITIAL SCAN: Organizing existing files in {root_path} ---")
+        files = [f for f in os.listdir(root_path) if os.path.isfile(os.path.join(root_path, f))]
+        files = [f for f in files if not f.startswith(".")]
+        
+        for filename in files:
+            file_path = os.path.join(root_path, filename)
+            try:
+                # Synchronous organization during startup
+                self.service.organizer.organize_file(file_path, root_path, table_name=table_name)
+            except Exception as e:
+                print(f"Error organizing existing file {filename}: {e}")
 
     def stop_watching(self, path_id: str) -> Tuple[bool, str]:
         """

@@ -23,7 +23,7 @@ class SettingsView(ft.Container):
             content=ft.Text("Are you sure you want to permanently delete ALL indexed data in the vector database? This action cannot be undone."),
             actions=[
                 ft.TextButton("Cancel", on_click=self.close_dialog),
-                ft.ElevatedButton("Delete All", bgcolor=ColorPalette.ERROR, color=ft.Colors.WHITE, on_click=self.confirm_clear_database),
+                ft.FilledButton("Delete All", bgcolor=ColorPalette.ERROR, color=ft.Colors.WHITE, on_click=self.confirm_clear_database),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
@@ -155,7 +155,8 @@ class SettingsView(ft.Container):
                         ft.Icons.DELETE_OUTLINE, 
                         icon_color=ColorPalette.ERROR,
                         tooltip="Stop Watching",
-                        on_click=lambda e: self.handle_stop_watching(path_data['id'])
+                        data=path_data['id'],
+                        on_click=self.handle_stop_watching
                     )
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN
@@ -187,7 +188,9 @@ class SettingsView(ft.Container):
             except Exception as ex:
                 NotificationManager.error(f"Error: {str(ex)}")
 
-    async def handle_stop_watching(self, path_id):
+    async def handle_stop_watching(self, e):
+        path_id = e.control.data
+        # stop_watching is sync in manager
         success, msg = self.watcher_manager.stop_watching(path_id)
         if success:
              NotificationManager.success(msg)

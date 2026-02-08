@@ -22,7 +22,7 @@ class Organizer:
         )
         self.repo = WatchedPathsRepository()
 
-    def organize_file(self, file_path: str, watched_root: str):
+    def organize_file(self, file_path: str, watched_root: str, table_name: Optional[str] = None):
         """
         Analyzes and moves a file to a semantic subfolder.
         """
@@ -66,12 +66,12 @@ class Organizer:
             # But let's look it up from DB if we can, or just take it as arg?
             # Let's verify with the repo.
             
-            watched_paths = self.repo.get_watched_paths()
-            table_name = None
-            for wp in watched_paths:
-                if wp["path"] == watched_root:
-                    table_name = wp["table_name"]
-                    break
+            if not table_name:
+                watched_paths = self.repo.get_watched_paths()
+                for wp in watched_paths:
+                    if wp["path"] == watched_root:
+                        table_name = wp["table_name"]
+                        break
             
             if table_name:
                 # 6. Delete old record from LanceDB (sync move)
