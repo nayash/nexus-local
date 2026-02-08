@@ -34,6 +34,19 @@ def init_db():
             FOREIGN KEY (chat_id) REFERENCES chats (id)
         )
     ''')
+
+    # Watched Paths Table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS watched_paths (
+            id TEXT PRIMARY KEY,
+            path TEXT NOT NULL,
+            table_name TEXT NOT NULL,
+            status TEXT DEFAULT 'active',
+            last_scan REAL,
+            strategy TEXT DEFAULT 'organize_and_ingest',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     
     conn.commit()
     conn.close()
@@ -137,5 +150,56 @@ class ChatRepository:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM messages")
         cursor.execute("DELETE FROM chats")
+        conn.commit()
+        conn.close()
+
+
+class WatchedPathsRepository:
+    def __init__(self):
+        self.db_path = DB_PATH
+        init_db()
+
+    def _get_conn(self):
+        return sqlite3.connect(self.db_path)
+
+    def add_watched_path(self, path: str, table_name: str, strategy: str = 'organize_and_ingest') -> str:
+        """Adds a new watched path."""
+        path_id = str(uuid.uuid4())
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO watched_paths (id, path, table_name, strategy, created_at) VALUES (?, ?, ?, ?, ?)",
+            (path_id, path, table_name, strategy, datetime.datetime.now())
+        )
+        conn.commit()
+        conn.close()
+        return path_id
+
+    def get_watched_paths(self) -> List[Dict]:
+        """Retrieves all watched paths."""
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM watched_paths")
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def remove_watched_path(self, path_id: str):
+        """Removes a watched path."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM watched_paths WHERE id = ?", (path_id,))
+        conn.commit()
+        conn.close()
+
+    def update_last_scan(self, path_id: str):
+        """Updates the last scan timestamp."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE watched_paths SET last_scan = ? WHERE id = ?",
+            (datetime.datetime.now().timestamp(), path_id)
+        )
         conn.commit()
         conn.close()

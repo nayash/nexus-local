@@ -128,7 +128,7 @@ class NexusIngestor:
             return self.retriever.invoke(query)[:k]
 
 
-    def ingest_directory(self, path: str, recursive: bool = True) -> Tuple[bool, str, Optional[str]]:
+    def ingest_directory(self, path: str, recursive: bool = True, table_name: Optional[str] = None) -> Tuple[bool, str, Optional[str]]:
         """
         Ingests all supported files from a directory.
         """
@@ -139,8 +139,10 @@ class NexusIngestor:
         if not os.path.isdir(path):
             return False, "Path is not a directory.", None
 
-        # Sanitize table name for the folder
-        table_name = self._sanitize_table_name(os.path.basename(path))
+        # Sanitize table name for the folder if not provided
+        if not table_name:
+            table_name = self._sanitize_table_name(os.path.basename(path))
+            
         print(f"--- 📂 DIRECTORY DETECTED: Will ingest into table '{table_name}' ---")
         
         files_to_ingest = self._find_files(path, recursive)

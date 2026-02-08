@@ -3,6 +3,8 @@ from styles import ColorPalette, TextStyles
 import asyncio
 from src.ui.managers.notification_manager import NotificationManager
 
+from src.core.watcher_manager import WatcherManager
+
 class SettingsView(ft.Container):
     def __init__(self, on_back_click):
         super().__init__()
@@ -10,6 +12,7 @@ class SettingsView(ft.Container):
         self.expand = True
         self.bgcolor = ColorPalette.BG_PRIMARY
         self.padding = 40
+        self.watcher_manager = WatcherManager() # Initialize manager
         self.content = self.build_content()
 
     def build_content(self):
@@ -25,6 +28,10 @@ class SettingsView(ft.Container):
             actions_alignment=ft.MainAxisAlignment.END,
         )
         
+        # Watched Paths List
+        self.watched_paths_column = ft.Column(spacing=10)
+        # self.refresh_watched_paths()  <-- Moved to did_mount
+
         return ft.Column(
             controls=[
                 ft.Row(
@@ -40,9 +47,31 @@ class SettingsView(ft.Container):
                 ),
                 ft.Divider(color=ColorPalette.BORDER, height=40),
                 
+                # --- Watched Folders Section ---
+                ft.Text("Watched Folders", style=TextStyles.body_normal(), weight=ft.FontWeight.BOLD),
+                ft.Text("Folders monitored for auto-organization and ingestion.", style=TextStyles.label_small()),
+                ft.Container(height=10),
+                
+                self.create_setting_card(
+                    "Add Watched Folder",
+                    "Select a folder to watch, organize, and ingest.",
+                    ft.FilledButton(
+                        "Add Folder",
+                        bgcolor=ColorPalette.ACCENT,
+                        color=ColorPalette.TEXT_PRIMARY,
+                        on_click=self.handle_add_watched_folder
+                    )
+                ),
+                
+                ft.Container(height=20),
+                ft.Text("Active Watches", style=TextStyles.body_normal(), weight=ft.FontWeight.BOLD),
+                self.watched_paths_column,
+                
+                ft.Divider(color=ColorPalette.BORDER, height=40),
+
                 # File Ingestion Section
-                ft.Text("Knowledge Base", style=TextStyles.body_normal(), weight=ft.FontWeight.BOLD),
-                ft.Text("Manage your local files for RAG ingestion.", style=TextStyles.label_small()),
+                ft.Text("Manual Ingestion", style=TextStyles.body_normal(), weight=ft.FontWeight.BOLD),
+                ft.Text("Manually ingest files or folders.", style=TextStyles.label_small()),
                 ft.Container(height=20),
                 
                 self.create_setting_card(
@@ -89,7 +118,82 @@ class SettingsView(ft.Container):
         # Determine if we can add to overlay
         if self.page:
             self.page.overlay.append(self.clear_confirm_dialog)
+            self.refresh_watched_paths() # Load data when mounted
             self.page.update()
+
+    def refresh_watched_paths(self):
+        """Refreshes the list of watched paths."""
+        self.watched_paths_column.controls.clear()
+        paths = self.watcher_manager.get_watched_paths()
+        
+        if not paths:
+             self.watched_paths_column.controls.append(
+                 ft.Text("No folders currently watched.", style=TextStyles.label_small(), italic=True)
+             )
+        else:
+            for p in paths:
+                self.watched_paths_column.controls.append(
+                    self.create_watched_path_item(p)
+                )
+        
+        if self.page:
+            self.watched_paths_column.update()
+
+    def create_watched_path_item(self, path_data):
+        return ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.FOLDER_OPEN, color=ColorPalette.ACCENT),
+                    ft.Column(
+                        [
+                            ft.Text(path_data['path'], style=TextStyles.body_normal(), weight=ft.FontWeight.BOLD),
+                            ft.Text(f"Table: {path_data['table_name']}", style=TextStyles.label_small())
+                        ],
+                        expand=True
+                    ),
+                    ft.IconButton(
+                        ft.Icons.DELETE_OUTLINE, 
+                        icon_color=ColorPalette.ERROR,
+                        tooltip="Stop Watching",
+                        on_click=lambda e: self.handle_stop_watching(path_data['id'])
+                    )
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN
+            ),
+            padding=10,
+            border=ft.Border.all(1, ColorPalette.BORDER),
+            border_radius=8,
+            bgcolor=ColorPalette.BG_SECONDARY
+        )
+
+    async def handle_add_watched_folder(self, e):
+        path = await ft.FilePicker().get_directory_path()
+        if path:
+            NotificationManager.info(f"Initializing watcher for: {path}...")
+            
+            # Run in background to avoid freezing UI logic (though manager calls service which is async/threaded? 
+            # Manager uses synchronous ingestion calls currently. So we MUST run in thread.)
+            
+            def _background_init():
+                return self.watcher_manager.initialize_path(path)
+
+            try:
+                success, msg = await asyncio.to_thread(_background_init)
+                if success:
+                    NotificationManager.success(msg)
+                    self.refresh_watched_paths()
+                else:
+                    NotificationManager.error(msg)
+            except Exception as ex:
+                NotificationManager.error(f"Error: {str(ex)}")
+
+    async def handle_stop_watching(self, path_id):
+        success, msg = self.watcher_manager.stop_watching(path_id)
+        if success:
+             NotificationManager.success(msg)
+             self.refresh_watched_paths()
+        else:
+             NotificationManager.error(msg)
 
     async def handle_browse_folder(self, e):
         path = await ft.FilePicker().get_directory_path()
@@ -120,7 +224,6 @@ class SettingsView(ft.Container):
         except Exception as ex:
             NotificationManager.error(f"Error: {str(ex)}")
     
-
 
     async def clear_database(self, e):
         """Triggers the safety confirmation prompt."""

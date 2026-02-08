@@ -8,7 +8,22 @@ authors = [
     { name = "Outliers Tech", email = "outliers91@gmail.com" }
 ]
 dependencies = [
-    "flet=0.80.4"
+    "flet==0.80.4",
+    "watchdog",
+    "requests",
+    "python-dotenv",
+    "pydantic",
+    "pandas",
+    "lancedb",
+    "pypdf",
+    "ddgs==9.10.0",
+    "langchain-core>=0.3.15",
+    "langchain>=0.3.15",
+    "langchain-community>=0.3.15",
+    "langchain-classic>=0.3.15",
+    "langchain-ollama>=0.2.0",
+    "langchain-text-splitters>=0.3.0",
+    "langgraph"
 ]
 
 [dependency-groups]
