@@ -97,10 +97,47 @@ class Organizer:
             print(f"Failed to move file: {e}")
 
     def _read_file_snippet(self, file_path: str, max_chars: int = 2000) -> str:
+        """
+        Smartly reads a text snippet from a file. 
+        Handles PDFs using pypdf and fails gracefully for other binaries.
+        """
+        import os
+        from pypdf import PdfReader
+
+        ext = os.path.splitext(file_path)[1].lower()
+
         try:
-            with open(file_path, 'r', errors='ignore') as f:
-                return f.read(max_chars)
-        except Exception:
+            # 1. Handle PDF specifically
+            if ext == '.pdf':
+                try:
+                    reader = PdfReader(file_path)
+                    text = ""
+                    # Read first 2 pages max to get context
+                    for page in reader.pages[:2]: 
+                        text += page.extract_text() or ""
+                        if len(text) > max_chars:
+                            break
+                    return text[:max_chars].strip()
+                except Exception as e:
+                    print(f"Error reading PDF {file_path}: {e}")
+                    return "[Unreadable PDF Content]"
+
+            # 2. Handle known binary extensions to avoid "garbage" characters
+            # You can expand this list (images, zips, executables)
+            binary_exts = {'.png', '.jpg', '.jpeg', '.gif', '.zip', '.exe', '.bin', '.pyc'}
+            if ext in binary_exts:
+                return "[Binary File - Categorize based on Filename]"
+
+            # 3. Default Text Read (with utf-8 replacement to avoid crashes)
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                content = f.read(max_chars)
+                # Check if it looks like binary garbage (too many null bytes)
+                if '\0' in content:
+                    return "[Binary Content]"
+                return content.strip()
+                
+        except Exception as e:
+            print(f"Failed to read snippet for {file_path}: {e}")
             return ""
 
     def _get_existing_folders(self, root: str) -> str:
@@ -110,31 +147,41 @@ class Organizer:
         return ", ".join(folders)
 
     def _categorize_file(self, filename: str, content: str, existing_folders: str) -> str:
+        # Fallback if content is empty or unreadable
+        if not content or len(content) < 10:
+            content = "[Content unreadable/empty. RELY ON FILENAME ALONE]"
+
         prompt = ChatPromptTemplate.from_template(
             """
-            You are an expert file librarian. Analyze the following file to determine the best semantic folder category.
+            You are a strict data organizer. Your ONLY job is to output a single Category Name.
             
+            Task: Categorize the file below into a concise folder name.
+            
+            CONTEXT:
             Filename: {filename}
-            Content Snippet (First 2KB):
+            Content Snippet:
             {content}
             
             Existing Categories: {existing_folders}
             
-            Rules:
-            1. Categorize based on CONTENT TYPE & file names if it's meaningful (e.g., 'Invoices', 'ResearchPapers', 'Logs', 'Contracts' etc.), NOT file format (e.g., 'PDFs', 'TextFiles').
-            2. BANNED CATEGORIES (Do NOT use these): 'Documents', 'Files', 'Data', 'General', 'Misc', 'Others', 'Documentation'.
-            3. Use an existing category ONLY if it is a PERFECT semantic match. Otherwise, create a new specific one.
-            4. Format: CamelCase (e.g., 'ResearchPapers', 'LegalDocs', 'ServerLogs').
-            5. Return ONLY the category name. No markdown.
+            STRICT RULES:
+            1. Output EXACTLY ONE WORD (CamelCase).
+            2. NO explanations. NO headers. NO "I think...". NO markdown.
+            3. If the content snippet is garbage or empty, categorize based strictly on the Filename.
+            4. Prioritize existing categories if they are a strong match.
+            5. BANNED: 'Documents', 'Files', 'General', 'Misc', 'Data'.
             
-            Examples:
-            - Content is an academic paper -> 'ResearchPapers'
-            - Content is a receipt/bill -> 'Invoices'
-            - Content is a python script -> 'Scripts'
-            - Content is a server log -> 'Logs'
-            - Content is an insurance policy -> 'InsuranceDocs'
+            EXAMPLES:
+            - 'invoice_2024.pdf' -> Invoices
+            - 'app.py' -> Scripts
+            - 'meeting_notes.txt' -> Notes
+            - 'unknown_file.xyz' -> _Unsorted
+            
+            YOUR RESPONSE (One Word Only):
             """
         )
+        print(f'Analyzying: {filename}, content: {content}, existing_folders: {existing_folders}') # Optional debug
+
         chain = prompt | self.llm | StrOutputParser()
         
         try:
@@ -143,6 +190,7 @@ class Organizer:
                 "content": content,
                 "existing_folders": existing_folders
             })
+            print(f'LLM category Response: {response}') # Debug
             return self._parse_category_from_response(response)
         except Exception as e:
             print(f"LLM Categorization failed: {e}")
@@ -152,40 +200,38 @@ class Organizer:
         if not response:
             return "_Unsorted"
 
-        # 1. Extract from **bold** if present (common LLM pattern)
-        if "**" in response:
-            import re
-            match = re.search(r'\*\*(.*?)\*\*', response)
-            if match:
-                candidate = match.group(1).strip()
-                if candidate:
-                    response = candidate
-        
-        # 2. Extract first non-empty line if it's still multiline
-        lines = [line.strip() for line in response.split('\n') if line.strip()]
-        if not lines:
-            return "_Unsorted"
-        
-        # Taking the first line as the category candidate
-        raw_category = lines[0]
-
-        # 3. Sanitize (Alphanumeric + Underscore/Hyphen only)
-        # Replace common separators with underscore
-        sanitized = raw_category.replace(" ", "_").replace("/", "_").replace("\\", "_")
-        
-        # Remove any other non-allowed characters
         import re
-        sanitized = re.sub(r'[^a-zA-Z0-9_\-]', '', sanitized)
         
-        # 4. Length Limit (Linux max is 255, but we want short categories)
-        max_length = 50
-        cleaned = sanitized[:max_length]
-
-        # 5. Final Fallback
-        if not cleaned:
+        # 1. Clean up "Chatty" prefixes like "Category: Invoices" or "I choose Invoices"
+        # We look for the last capitalized word in the string, as categories are usually CamelCase.
+        # But first, let's remove common distinct noise.
+        clean_response = response.replace("Category:", "").replace("Answer:", "").strip()
+        
+        # 2. Extract the first valid CamelCase-ish word
+        # Regex explanation: Look for a word starting with a letter, containing letters/numbers/underscores
+        matches = re.findall(r'[a-zA-Z0-9_]+', clean_response)
+        
+        if not matches:
             return "_Unsorted"
             
-        return cleaned
+        # Usually the first word is the best bet if we stripped "Category:"
+        candidate = matches[0]
+        
+        # 3. Final Sanity Check
+        # If the candidate is just a common stop word (like "The", "A", "Based"), try the next one
+        stop_words = {"The", "A", "An", "Based", "I", "This", "File", "Content"}
+        if candidate in stop_words and len(matches) > 1:
+            candidate = matches[1]
+            
+        # 4. Length Limit & Sanitize
+        candidate = candidate[:30] # Categories shouldn't be massive
+        
+        # Ensure it starts with a letter or underscore
+        if not candidate[0].isalpha() and candidate[0] != '_':
+            candidate = "Docs_" + candidate
+
+        print(f'Parsed category: {candidate}')
+        return candidate
 
     def _handle_collisions(self, dest_path: str) -> str:
         """
