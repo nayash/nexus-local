@@ -110,7 +110,7 @@ class WatcherManager:
         print(f"--- 🧠 INITIAL SCAN: Organizing existing files in {root_path} ---")
         files = [f for f in os.listdir(root_path) if os.path.isfile(os.path.join(root_path, f))]
         files = [f for f in files if not f.startswith(".")]
-        
+        print(f'files: {len(files)}')
         for filename in files:
             file_path = os.path.join(root_path, filename)
             try:

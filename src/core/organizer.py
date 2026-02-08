@@ -26,6 +26,7 @@ class Organizer:
         """
         Analyzes and moves a file to a semantic subfolder.
         """
+        print(f'organizing file: {file_path}')
         if not os.path.exists(file_path):
             print(f"File not found: {file_path}")
             return
@@ -137,15 +138,54 @@ class Organizer:
         chain = prompt | self.llm | StrOutputParser()
         
         try:
-            category = chain.invoke({
+            response = chain.invoke({
                 "filename": filename,
                 "content": content,
                 "existing_folders": existing_folders
             })
-            return category.strip().replace("/", "_").replace("\\", "_") # Sanitize
+            return self._parse_category_from_response(response)
         except Exception as e:
             print(f"LLM Categorization failed: {e}")
             return "_Unsorted"
+
+    def _parse_category_from_response(self, response: str) -> str:
+        if not response:
+            return "_Unsorted"
+
+        # 1. Extract from **bold** if present (common LLM pattern)
+        if "**" in response:
+            import re
+            match = re.search(r'\*\*(.*?)\*\*', response)
+            if match:
+                candidate = match.group(1).strip()
+                if candidate:
+                    response = candidate
+        
+        # 2. Extract first non-empty line if it's still multiline
+        lines = [line.strip() for line in response.split('\n') if line.strip()]
+        if not lines:
+            return "_Unsorted"
+        
+        # Taking the first line as the category candidate
+        raw_category = lines[0]
+
+        # 3. Sanitize (Alphanumeric + Underscore/Hyphen only)
+        # Replace common separators with underscore
+        sanitized = raw_category.replace(" ", "_").replace("/", "_").replace("\\", "_")
+        
+        # Remove any other non-allowed characters
+        import re
+        sanitized = re.sub(r'[^a-zA-Z0-9_\-]', '', sanitized)
+        
+        # 4. Length Limit (Linux max is 255, but we want short categories)
+        max_length = 50
+        cleaned = sanitized[:max_length]
+
+        # 5. Final Fallback
+        if not cleaned:
+            return "_Unsorted"
+            
+        return cleaned
 
     def _handle_collisions(self, dest_path: str) -> str:
         """
