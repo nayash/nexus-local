@@ -20,10 +20,12 @@ def get_table(table_name="documents"):
     
     # We define a simple schema implicitly by opening the table.
     # If it doesn't exist, the ingestion script will create it.
-    try:
+    # If it doesn't exist, the ingestion script will create it.
+    existing = db.table_names()
+    if table_name in existing:
         return db.open_table(table_name)
-    except FileNotFoundError:
-        return None  # Table doesn't exist yet
+    else:
+        return None
 
 def list_tables():
     """Returns a list of all table names in the database."""
@@ -94,9 +96,10 @@ def ensure_table_has_core_fields(table):
     """
     Checks if the table has the core metadata fields 'author' and 'extra_metadata'.
     If not, adds them with default values.
+    Returns True if columns were added, False otherwise.
     """
     if not table:
-        return
+        return False
 
     try:
         # Check if fields exist in schema (top-level or inside metadata?)
@@ -124,6 +127,10 @@ def ensure_table_has_core_fields(table):
         if new_cols:
             print(f"--- 🔄 MIGRATING SCHEMA: Adding columns {list(new_cols.keys())} ---")
             table.add_columns(new_cols)
+            return True  # Columns were added
+        
+        return False  # No changes needed
             
     except Exception as e:
         print(f"Warning: Schema migration failed: {e}")
+        return False

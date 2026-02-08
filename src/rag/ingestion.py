@@ -351,6 +351,7 @@ class NexusIngestor:
             docs = loader.load()
             
             # 2. Prepare Retriever
+            # 2. Prepare Retriever
             target_retriever = self.retriever
             
             # If table_name is specified and different from default, create a temporary retriever
@@ -370,21 +371,6 @@ class NexusIngestor:
                 )
             
             # 3. Add to Retriever (Handles splitting & storing)
-            
-            # SCHEMA MIGRATION: Ensure table has 'author' and 'extra_metadata'
-            # We access the table object from the vectorstore wrapper.
-            # LangChain LanceDB wrapper stores table in self.vectorstore._table (internal) 
-            # OR we can get it again from storage to be safe/clean.
-            # But wait, LangChain wrapper opens table on demand sometimes.
-            # Let's try to get it from our own storage util since we created the vstore with it potentially.
-            
-            try:
-                # We need the underlying LanceDB table object to modify schema
-                real_table = get_table(target_table)
-                ensure_table_has_core_fields(real_table)
-            except Exception as e:
-                print(f"Warning during schema check: {e}")
-
             import json
 
             # CORE FIELDS are those we want explicit columns for (plus vector/text/id/source)
