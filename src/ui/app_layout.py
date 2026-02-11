@@ -46,7 +46,7 @@ class AppLayout(ft.Row):
                 ),
                 on_pan_update=self.handle_resize_sidebar,
                 mouse_cursor=ft.MouseCursor.RESIZE_LEFT_RIGHT,
-                drag_interval=10 # Throttle updates slightly
+                drag_interval=40 # Throttle updates slightly
             ),
             self.active_view
         ]
