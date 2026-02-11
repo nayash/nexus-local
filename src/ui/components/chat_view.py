@@ -6,6 +6,7 @@ from src.core.utils import run_ollama_pull
 from src.core.user_settings import save_setting, get_setting
 from src.ui.agent_interface import run_agent_stream
 from src.core.database import ChatRepository
+from src.ui.managers.notification_manager import NotificationManager
 import threading
 
 class ChatView(ft.Container):
@@ -134,6 +135,7 @@ class ChatView(ft.Container):
 
     def start_new_chat(self):
         print("=== START_NEW_CHAT called ===")
+        self.clear_focus(None) # Clear any existing file focus
         self.current_chat_id = None
         print(f"current_chat_id set to: {self.current_chat_id}")
         self.chat_history.controls.clear()
@@ -141,6 +143,7 @@ class ChatView(ft.Container):
         self.chat_history.update()
 
     def load_chat(self, chat_id):
+        self.clear_focus(None) # Clear any existing file focus
         self.current_chat_id = chat_id
         self.chat_history.controls.clear()
         
@@ -241,7 +244,7 @@ class ChatView(ft.Container):
     def clear_focus(self, e):
         self.app_page.data["focused_file"] = None
         self.update_focus_ui(None)
-        NotificationManager.info("Focus cleared. Searching all knowledge.")
+        # NotificationManager.info("Focus cleared. Searching all knowledge.")
 
     def update_focus_ui(self, file_path):
         if file_path:
@@ -328,6 +331,7 @@ class ChatView(ft.Container):
         full_response = ""
         try:
             # Prepare context (include focused_file if available in page.data)
+            print(f'chat_view: focused_file: {self.app_page.data.get("focused_file")}')
             context = {
                 "focused_file": self.app_page.data.get("focused_file")
             }

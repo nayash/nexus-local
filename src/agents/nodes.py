@@ -108,6 +108,7 @@ def agent_node(state: AgentState):
         
     # --- FOCUS MODE CHECK ---
     # NOW: Read from state, not session
+    print(f'agent_node: focused_file: {state.get("focused_file")}')
     focused_file = state.get("focused_file")
     
     if focused_file:
