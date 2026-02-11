@@ -189,10 +189,12 @@ class Organizer:
             3. If the file is source code (py, js, sh, or other common code extension), choose 'Development'.
             4. If the file is a log or data dump (json, csv, txt, log, etc.), choose 'DataLogs'.
             5. If the file is an invoice, receipt, or bill, choose 'Finance'.
-            6. If the file is an academic paper or manual (txt, pdf, doc, docx, etc.), choose 'TechDocs' or 'BooksLibrary'.
-            7. If the file is user's personal document like aadhar card, pan card, passport, etc., choose 'IdentityPersonal'.
-            8. If uncertain, unclear, or garbage, choose 'Unsorted'.
-            9. Output ONLY the category name.
+            6. If the file is an image and you can't determine the category by name, choose 'Images'.
+            7. If the file is an academic paper or manual (txt, pdf, doc, docx, etc.), choose 'TechDocs'.
+            8. If the file is txt, pdf, docx, epub, mobi, etc. and it is a book, choose 'BooksLibrary'
+            9. If the file is user's personal document like aadhar card, pan card, passport, etc., choose 'IdentityPersonal'.
+            10. If uncertain, unclear, or garbage, choose 'Unsorted'.
+            11. Output ONLY the category name.
             
             YOUR CHOICE:
             """
