@@ -134,8 +134,8 @@ class SettingsView(ft.Container):
     def did_mount(self):
         # Determine if we can add to overlay
         if self.page:
-            self.page.overlay.append(self.clear_confirm_dialog)
-            self.page.overlay.append(self.clear_confirm_dialog)
+            if self.clear_confirm_dialog not in self.page.overlay:
+                self.page.overlay.append(self.clear_confirm_dialog)
             self.refresh_watched_paths() # Load data when mounted
             self.load_storage_stats() # Initial load of storage stats
             self.page.update()
@@ -294,7 +294,6 @@ class SettingsView(ft.Container):
         self.clear_confirm_dialog.open = False
         self.page.update()
         
-        # 2. Show loading snack
         # 2. Show loading snack
         NotificationManager.info("Clearing Vector Database...")
         

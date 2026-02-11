@@ -70,10 +70,45 @@ class FileViewerView(ft.Container):
             filename = os.path.basename(file_path)
             self.file_title.value = f"📄 {filename}"
             
-            # Read file content
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
+            ext = os.path.splitext(file_path)[1].lower()
+            content = ""
             
+            # --- PDF Handling ---
+            if ext == '.pdf':
+                try:
+                    from pypdf import PdfReader
+                    reader = PdfReader(file_path)
+                    text_parts = []
+                    # Limit to first 50 pages to avoid freezing on massive PDFs
+                    max_pages = 50
+                    for i, page in enumerate(reader.pages[:max_pages]):
+                        extracted = page.extract_text()
+                        if extracted:
+                            text_parts.append(f"--- Page {i+1} ---\n{extracted}")
+                    
+                    if not text_parts:
+                        content = "*[PDF appears to be scanned or contains no extractable text. Preview not available.]*"
+                    else:
+                        content = "\n\n".join(text_parts)
+                        if len(reader.pages) > max_pages:
+                            content += f"\n\n*[Preview truncated after {max_pages} pages]*"
+                            
+                except Exception as pdf_ex:
+                    content = f"*[Error reading PDF: {str(pdf_ex)}]*"
+
+            # --- Other Binary Files ---
+            elif ext in ['.png', '.jpg', '.jpeg', '.gif', '.zip', '.exe', '.bin', '.pyc', '.whl']:
+                 content = f"*[Binary file ({ext}) cannot be previewed as text]*"
+            
+            # --- Default Text Handling ---
+            else:
+                 try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                 except UnicodeDecodeError:
+                     # Fallback for files that look like text but aren't utf-8
+                     content = "*[File content is not valid UTF-8 text and cannot be previewed]*"
+
             # Truncate if too large
             if len(content) > 100000:
                 content = content[:100000] + "\n\n... [File too large, truncated] ..."
