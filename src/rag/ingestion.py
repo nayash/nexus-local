@@ -11,6 +11,8 @@ from langchain_community.vectorstores import LanceDB
 from langchain_classic.storage import EncoderBackedStore
 from langchain_core.documents import Document
 import pickle
+from typing import Callable
+
 
 import pwd
 from typing import List, Tuple, Optional, Literal, Dict, Any
@@ -97,16 +99,21 @@ class NexusIngestor:
                 parent_splitter=self.parent_splitter
             )
 
-    def ingest_file(self, file_path: str, table_name: str = "documents"):
+    def ingest_file(self, file_path: str, table_name: str = "documents", progress_callback: Optional[Callable] = None):
         """
         Ingests a file using the selected strategy.
         """
         if self.strategy == "naive":
-            return self._ingest_naive(file_path, table_name)
+            result = self._ingest_naive(file_path, table_name)
         elif self.strategy == "parent":
-            return self._ingest_parent(file_path, table_name)
+            result = self._ingest_parent(file_path, table_name)
         else:
             raise ValueError(f"Unknown strategy: {self.strategy}")
+            
+        if progress_callback:
+            progress_callback()
+            
+        return result
 
     def search(self, query: str, k: int = 5, table_name: str = "documents"):
         """
@@ -266,7 +273,7 @@ class NexusIngestor:
             return self.retriever.invoke(query)[:k]
 
 
-    def ingest_directory(self, path: str, recursive: bool = True, table_name: Optional[str] = None) -> Tuple[bool, str, Optional[str]]:
+    def ingest_directory(self, path: str, recursive: bool = True, table_name: Optional[str] = None, progress_callback: Optional[Callable] = None) -> Tuple[bool, str, Optional[str]]:
         """
         Ingests all supported files from a directory.
         """
@@ -298,6 +305,10 @@ class NexusIngestor:
             if success:
                 successful_files += 1
                 total_chunks += chunks
+            
+            # Explicit callback after each file in directory ingestion
+            if progress_callback:
+                progress_callback()
                 
         msg = f"Successfully ingested {successful_files} files ({total_chunks} chunks) into '{table_name}'."
         return True, msg, None
@@ -539,7 +550,7 @@ def ingest_file(file_path: str, table_name: str = "documents", strategy: Literal
     ingestor = NexusIngestor(strategy=strategy)
     return ingestor.ingest_file(file_path, table_name)
 
-def ingest_path(path: str, strategy: Literal["naive", "parent"] = "naive"):
+def ingest_path(path: str, strategy: Literal["naive", "parent"] = "naive", progress_callback: Optional[Callable] = None):
     """
     Ingests all files from a directory or a single file. (Naive strategy default)
     """
@@ -549,9 +560,9 @@ def ingest_path(path: str, strategy: Literal["naive", "parent"] = "naive"):
     ingestor = NexusIngestor(strategy=strategy)
     
     if os.path.isfile(path):
-        return ingestor.ingest_file(path)
+        return ingestor.ingest_file(path, progress_callback=progress_callback)
     elif os.path.isdir(path):
-        return ingestor.ingest_directory(path)
+        return ingestor.ingest_directory(path, progress_callback=progress_callback)
     else:
         return False, "Path does not exist.", None
 

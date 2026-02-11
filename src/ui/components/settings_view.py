@@ -4,6 +4,8 @@ import asyncio
 from src.ui.managers.notification_manager import NotificationManager
 
 from src.core.watcher_manager import WatcherManager
+from src.core.services.storage_stats import get_total_storage_usage
+
 
 class SettingsView(ft.Container):
     def __init__(self, on_back_click):
@@ -28,9 +30,13 @@ class SettingsView(ft.Container):
             actions_alignment=ft.MainAxisAlignment.END,
         )
         
+        # Storage Stats Label
+        self.storage_info_text = ft.Text("Calculating storage...", style=TextStyles.label_small())
+
         # Watched Paths List
         self.watched_paths_column = ft.Column(spacing=10)
         # self.refresh_watched_paths()  <-- Moved to did_mount
+
 
         return ft.Column(
             controls=[
@@ -106,10 +112,21 @@ class SettingsView(ft.Container):
                  self.create_setting_card(
                     "Clear Vector Database", 
                     "Permanently remove all indexed documents.", 
-                    ft.FilledButton("Clear All Data", bgcolor=ColorPalette.ERROR, color=ColorPalette.TEXT_PRIMARY,
-                        on_click=self.clear_database # TODO: Implement this
+                    ft.Column(
+                        [
+                            ft.FilledButton("Clear All Data", bgcolor=ColorPalette.ERROR, color=ColorPalette.TEXT_PRIMARY,
+                                on_click=self.clear_database 
+                            ),
+                            self.storage_info_text
+                        ],
+                        alignment=ft.MainAxisAlignment.CENTER,
+                        horizontal_alignment=ft.CrossAxisAlignment.END,
+                        spacing=5
                     )
                 ),
+                ft.Container(height=20),
+
+
             ],
             scroll=ft.ScrollMode.AUTO
         )
@@ -118,8 +135,26 @@ class SettingsView(ft.Container):
         # Determine if we can add to overlay
         if self.page:
             self.page.overlay.append(self.clear_confirm_dialog)
+            self.page.overlay.append(self.clear_confirm_dialog)
             self.refresh_watched_paths() # Load data when mounted
+            self.load_storage_stats() # Initial load of storage stats
             self.page.update()
+
+    def load_storage_stats(self):
+        """Calculates and updates the storage usage label asynchronously."""
+        def _get_stats():
+            return get_total_storage_usage()
+
+        async def _update_ui():
+            # Run calculation in thread
+            stats = await asyncio.to_thread(_get_stats)
+            self.storage_info_text.value = stats
+            if self.page:
+                self.storage_info_text.update()
+
+        # Run async task
+        asyncio.create_task(_update_ui())
+
 
     def refresh_watched_paths(self):
         """Refreshes the list of watched paths."""
@@ -218,14 +253,29 @@ class SettingsView(ft.Container):
         import asyncio
         
         try:
+            # Capture loop for threadsafe calling
+            loop = asyncio.get_running_loop()
+            
+            def progress_callback_wrapper():
+                # Schedule load_storage_stats on the main loop
+                asyncio.run_coroutine_threadsafe(self._update_storage_stats_async(), loop)
+
             # Use asyncio.to_thread to run blocking function in background
-            success, msg, _ = await asyncio.to_thread(ingest_path, path, "parent")
+            success, msg, _ = await asyncio.to_thread(ingest_path, path, "parent", progress_callback_wrapper)
+
             if success:
                 NotificationManager.success(msg)
+                # Final update to be sure
+                self.load_storage_stats()
             else:
                 NotificationManager.error(msg)
         except Exception as ex:
             NotificationManager.error(f"Error: {str(ex)}")
+
+    async def _update_storage_stats_async(self):
+        """Helper to call load_storage_stats from async context."""
+        self.load_storage_stats()
+
     
 
     async def clear_database(self, e):
@@ -257,6 +307,8 @@ class SettingsView(ft.Container):
                 print('clear_all_data asyncio completed')
                 
                 NotificationManager.success("Vector database cleared successfully!")
+                self.load_storage_stats() # Update stats after clearing
+
             except Exception as ex:
                 print(f"Error clearing DB: {ex}")
                 NotificationManager.error(f"Failed to clear database: {str(ex)}")
