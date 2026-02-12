@@ -123,6 +123,9 @@ def ensure_table_has_core_fields(table):
             
         if "extra_metadata" not in existing_cols:
             new_cols["extra_metadata"] = "cast('{}' as string)"
+
+        if "title" not in existing_cols:
+            new_cols["title"] = "cast('Untitled' as string)"
             
         if new_cols:
             print(f"--- 🔄 MIGRATING SCHEMA: Adding columns {list(new_cols.keys())} ---")

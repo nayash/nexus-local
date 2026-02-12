@@ -353,7 +353,13 @@ class NexusIngestor:
             target_table = table_name if table_name else self.vector_table_name
             print(f"--- 📥 INGESTING (Parent-Child): {file_path} into '{target_table}' ---")
             
-            # 1. Load
+            
+            # NOTE: Schema migration disabled for Parent-Child strategy.
+            # LangChain stores metadata in a 'metadata' struct, not as top-level columns.
+            # Attempting to add top-level columns conflicts with the struct approach.
+            # The metadata struct can hold any fields without schema conflicts.
+            
+            # 1. Load Docs
             if file_path.endswith(".pdf"):
                 loader = PyPDFLoader(file_path)
             else:
@@ -361,37 +367,32 @@ class NexusIngestor:
                 loader = TextLoader(file_path, autodetect_encoding=True)
             docs = loader.load()
             
-            # 2. Prepare Retriever
-            # 2. Prepare Retriever
-            target_retriever = self.retriever
+            print(f"DEBUG: Document metadata keys: {list(docs[0].metadata.keys()) if docs else 'No docs'}")
             
-            # If table_name is specified and different from default, create a temporary retriever
-            if table_name and table_name != self.vector_table_name:
-                vstore = LanceDB(
-                    connection=self.db,
-                    embedding=embeddings_model,
-                    table_name=table_name,
-                    mode="append"
-                )
-                # Reuse the same docstore (filesystem) but different vector table
-                target_retriever = ParentDocumentRetriever(
-                    vectorstore=vstore,
-                    docstore=self.docstore,
-                    child_splitter=self.child_splitter,
-                    parent_splitter=self.parent_splitter
-                )
+            # 3. Get FRESH DB connection after schema changes (critical to avoid cached schema)
+            fresh_db = get_db_connection()
             
-            # 3. Add to Retriever (Handles splitting & storing)
+            # 4. Init/Refresh Retriever with fresh connection
+            vstore = LanceDB(
+                connection=fresh_db,
+                embedding=embeddings_model,
+                table_name=target_table,
+                mode="append"
+            )
+            
+            target_retriever = ParentDocumentRetriever(
+                vectorstore=vstore,
+                docstore=self.docstore,
+                child_splitter=self.child_splitter,
+                parent_splitter=self.parent_splitter
+            )
+            
+            # 4. Process Metadata & Add
             import json
 
             # CORE FIELDS are those we want explicit columns for (plus vector/text/id/source)
             # 'source' is inserted manually later.
             CORE_FIELDS = {'title', 'author', 'year', 'page', 'id', 'source', 'creationdate', 'creator', 'producer', 'moddate'}
-            # We expand core fields a bit to match common PDF fields to reduce JSON packing churn
-            # But user asked specifically for author + json extras.
-            # Let's keep it strict to what we verified: author is core.
-            # Let's stick to the plan: author + extra_metadata. 
-            # But wait, 'page' and 'source' are standard.
             
             KEEP_AS_COLUMNS = {'author', 'page', 'source', 'title'} 
 
@@ -400,7 +401,11 @@ class NexusIngestor:
                 if 'author' not in doc.metadata or not doc.metadata['author']:
                     doc.metadata['author'] = self._get_file_owner(file_path)
 
-                # 2. Metadata Packing
+                # 2. Title Fallback
+                if 'title' not in doc.metadata or not doc.metadata['title']:
+                     doc.metadata['title'] = os.path.basename(file_path)
+                     
+                # 3. Metadata Packing
                 extra_metadata = {}
                 keys_to_remove = []
                 
@@ -417,13 +422,6 @@ class NexusIngestor:
                         doc.metadata[key] = str_val
                         value = str_val
 
-                    # If key is NOT a core column, move to extras
-                    # We also check if it's already in the table schema? 
-                    # For now, strict hybrid approach: if not in KEEP_AS_COLUMNS, pack it.
-                    # Exception: If the table ALREADY has this column, do we keep it?
-                    # That would be ideal (evolution).
-                    # But simpler is to pack everything else into 'extra_metadata'.
-                    
                     if key not in KEEP_AS_COLUMNS:
                         extra_metadata[key] = value
                         keys_to_remove.append(key)
