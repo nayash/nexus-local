@@ -108,7 +108,8 @@ class StartupManager:
         """Verify critical libraries are importable."""
         required_deps = [
             "flet", "langgraph", "ddgs", 
-            "lancedb", "pypdf", "pandas"
+            "lancedb", "pypdf", "pandas",
+            "watchdog", "lark"
         ]
         try:
             # We just try functionality or just existence? 
@@ -121,8 +122,10 @@ class StartupManager:
             import lancedb
             import pypdf
             import pandas
+            import watchdog
             import requests
             import pydantic
+            import lark
 
             return True
         except ImportError as e:

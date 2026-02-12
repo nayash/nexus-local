@@ -18,10 +18,10 @@ class SearchInput(BaseModel):
     )
 
 class LocalSearchInput(BaseModel):
-    query: str = Field(description="The specific search query.")
+    query: str = Field(description="The full search query. Do NOT shorten the query to keywords. Pass the full user question or a comprehensive search query.")
     file_filter: Optional[str] = Field(
         default=None,
-        description="The absolute path of a specific file to search within. MUST be a valid, existing path provided in the context. DO NOT hallucinate or guess paths. If no file is focused, leave as None."
+        description="The absolute path of a specific file to search within. MUST be a valid, existing path provided in the context (e.g. from `focused_file` state). DO NOT guess or hallucinate paths based on filenames in the query. If the user mentions a filename but has not attached it, include the filename in the `query` field and leave this `file_filter` as None."
     )
 
 @tool(args_schema=SearchInput, response_format="content_and_artifact")

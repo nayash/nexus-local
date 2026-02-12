@@ -67,6 +67,7 @@ def search_local(query: str, file_filter: str = None) -> List[SearchResult]:
                         source="local"
                     )
                 )
+                print(f'added search result: {all_results[-1]}')
         except Exception as e:
             print(f"Error searching table {table_name}: {e}")
 

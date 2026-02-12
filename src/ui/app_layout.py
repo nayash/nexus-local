@@ -34,9 +34,48 @@ class AppLayout(ft.Row):
 
         self.controls = [
             self.sidebar,
-            ft.VerticalDivider(width=1, color=ColorPalette.BORDER),
+            ft.GestureDetector(
+                content=ft.Container(
+                    width=10, 
+                    bgcolor=ft.Colors.TRANSPARENT,
+                    content=ft.Container(
+                        bgcolor=ColorPalette.BORDER,
+                        width=1,
+                    ),
+                    alignment=ft.Alignment(0, 0)
+                ),
+                on_pan_update=self.handle_resize_sidebar,
+                mouse_cursor=ft.MouseCursor.RESIZE_LEFT_RIGHT,
+                drag_interval=40 # Throttle updates slightly
+            ),
             self.active_view
         ]
+
+    def handle_resize_sidebar(self, e: ft.DragUpdateEvent):
+        """Resizes the sidebar within 10% to 30% of page width."""
+        if not self.page:
+            return
+            
+
+            
+        # Use global_position.x to determine the new width directly
+        # This is more accurate than delta accumulation which can lag
+        new_width = e.global_position.x
+        
+        # Constraints
+        page_width = self.page.width
+        min_width = page_width * 0.10
+        max_width = page_width * 0.30
+        
+        # Apply constraints
+        if new_width < min_width:
+            new_width = min_width
+        elif new_width > max_width:
+            new_width = max_width
+            
+        self.sidebar.width = new_width
+        self.sidebar.update()
+
 
     def show_settings(self, e=None):
         self.controls[-1] = self.settings_view

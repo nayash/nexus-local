@@ -20,10 +20,12 @@ def get_table(table_name="documents"):
     
     # We define a simple schema implicitly by opening the table.
     # If it doesn't exist, the ingestion script will create it.
-    try:
+    # If it doesn't exist, the ingestion script will create it.
+    existing = db.table_names()
+    if table_name in existing:
         return db.open_table(table_name)
-    except FileNotFoundError:
-        return None  # Table doesn't exist yet
+    else:
+        return None
 
 def list_tables():
     """Returns a list of all table names in the database."""
@@ -58,3 +60,80 @@ def clear_all_tables():
         print(f"Error clearing DocStore: {e}")
         
     return True
+
+def get_source_field_for_table(table) -> str:
+    """
+    Determines the correct field name for the source path in a LanceDB table.
+    Returns 'source' if top-level, or 'metadata.source' if nested (common in Parent Strategy).
+    Raises ValueError if neither found.
+    """
+    if not table:
+         raise ValueError("Table is None")
+
+    try:
+        # Check top-level 'source'
+        # LanceDB schema structure: schema.names returns list of top-level fields
+        if 'source' in table.schema.names:
+            return 'source'
+        
+        # Check for 'metadata' struct
+        if 'metadata' in table.schema.names:
+            # We assume if metadata exists, source is inside it based on ingestion logic
+            return 'metadata.source'
+            
+        # Fallback or strict check? 
+        # For now, if we can't find source, we might be in trouble.
+        # But let's verify if metadata has source? 
+        # Investigating schema deeply might be slow if we load it all, but names should be fast.
+        
+        return 'source' # Fallback to naive default to see if it works or fails with better error
+        
+    except Exception as e:
+        print(f"Warning: Could not determine schema for table. Defaulting to 'source'. Error: {e}")
+        return 'source'
+
+def ensure_table_has_core_fields(table):
+    """
+    Checks if the table has the core metadata fields 'author' and 'extra_metadata'.
+    If not, adds them with default values.
+    Returns True if columns were added, False otherwise.
+    """
+    if not table:
+        return False
+
+    try:
+        # Check if fields exist in schema (top-level or inside metadata?)
+        # With Parent Strategy, metadata is usually a struct.
+        # But for evolving schema, we might add them as top-level columns if we can, 
+        # OR we need to evolve the 'metadata' struct itself (harder).
+        # Let's assume we want them available directly for querying?
+        # OR if the table uses 'metadata' struct, we should probably add them inside there?
+        # NO, LanceDB python add_columns adds top level columns.
+        # Mixing top-level and struct is fine.
+        
+        existing_cols = table.schema.names
+        new_cols = {}
+        
+        # We want 'author' and 'extra_metadata' to be available.
+        # If they are not in schema, we add them.
+        
+        if "author" not in existing_cols:
+            # Add 'author' column
+            new_cols["author"] = "cast('Unknown' as string)" # SQL expression for default value
+            
+        if "extra_metadata" not in existing_cols:
+            new_cols["extra_metadata"] = "cast('{}' as string)"
+
+        if "title" not in existing_cols:
+            new_cols["title"] = "cast('Untitled' as string)"
+            
+        if new_cols:
+            print(f"--- 🔄 MIGRATING SCHEMA: Adding columns {list(new_cols.keys())} ---")
+            table.add_columns(new_cols)
+            return True  # Columns were added
+        
+        return False  # No changes needed
+            
+    except Exception as e:
+        print(f"Warning: Schema migration failed: {e}")
+        return False

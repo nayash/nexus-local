@@ -3,6 +3,10 @@ from styles import ColorPalette, TextStyles
 import asyncio
 from src.ui.managers.notification_manager import NotificationManager
 
+from src.core.watcher_manager import WatcherManager
+from src.core.services.storage_stats import get_total_storage_usage
+
+
 class SettingsView(ft.Container):
     def __init__(self, on_back_click):
         super().__init__()
@@ -10,6 +14,7 @@ class SettingsView(ft.Container):
         self.expand = True
         self.bgcolor = ColorPalette.BG_PRIMARY
         self.padding = 40
+        self.watcher_manager = WatcherManager() # Initialize manager
         self.content = self.build_content()
 
     def build_content(self):
@@ -20,11 +25,19 @@ class SettingsView(ft.Container):
             content=ft.Text("Are you sure you want to permanently delete ALL indexed data in the vector database? This action cannot be undone."),
             actions=[
                 ft.TextButton("Cancel", on_click=self.close_dialog),
-                ft.ElevatedButton("Delete All", bgcolor=ColorPalette.ERROR, color=ft.Colors.WHITE, on_click=self.confirm_clear_database),
+                ft.FilledButton("Delete All", bgcolor=ColorPalette.ERROR, color=ft.Colors.WHITE, on_click=self.confirm_clear_database),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
         
+        # Storage Stats Label
+        self.storage_info_text = ft.Text("Calculating storage...", style=TextStyles.label_small())
+
+        # Watched Paths List
+        self.watched_paths_column = ft.Column(spacing=10)
+        # self.refresh_watched_paths()  <-- Moved to did_mount
+
+
         return ft.Column(
             controls=[
                 ft.Row(
@@ -40,9 +53,31 @@ class SettingsView(ft.Container):
                 ),
                 ft.Divider(color=ColorPalette.BORDER, height=40),
                 
+                # --- Watched Folders Section ---
+                ft.Text("Watched Folders", style=TextStyles.body_normal(), weight=ft.FontWeight.BOLD),
+                ft.Text("Folders monitored for auto-organization and ingestion.", style=TextStyles.label_small()),
+                ft.Container(height=10),
+                
+                self.create_setting_card(
+                    "Add Watched Folder",
+                    "Select a folder to watch, organize, and ingest.",
+                    ft.FilledButton(
+                        "Add Folder",
+                        bgcolor=ColorPalette.ACCENT,
+                        color=ColorPalette.TEXT_PRIMARY,
+                        on_click=self.handle_add_watched_folder
+                    )
+                ),
+                
+                ft.Container(height=20),
+                ft.Text("Active Watches", style=TextStyles.body_normal(), weight=ft.FontWeight.BOLD),
+                self.watched_paths_column,
+                
+                ft.Divider(color=ColorPalette.BORDER, height=40),
+
                 # File Ingestion Section
-                ft.Text("Knowledge Base", style=TextStyles.body_normal(), weight=ft.FontWeight.BOLD),
-                ft.Text("Manage your local files for RAG ingestion.", style=TextStyles.label_small()),
+                ft.Text("Manual Ingestion", style=TextStyles.body_normal(), weight=ft.FontWeight.BOLD),
+                ft.Text("Manually ingest files or folders.", style=TextStyles.label_small()),
                 ft.Container(height=20),
                 
                 self.create_setting_card(
@@ -77,10 +112,21 @@ class SettingsView(ft.Container):
                  self.create_setting_card(
                     "Clear Vector Database", 
                     "Permanently remove all indexed documents.", 
-                    ft.FilledButton("Clear All Data", bgcolor=ColorPalette.ERROR, color=ColorPalette.TEXT_PRIMARY,
-                        on_click=self.clear_database # TODO: Implement this
+                    ft.Column(
+                        [
+                            ft.FilledButton("Clear All Data", bgcolor=ColorPalette.ERROR, color=ColorPalette.TEXT_PRIMARY,
+                                on_click=self.clear_database 
+                            ),
+                            self.storage_info_text
+                        ],
+                        alignment=ft.MainAxisAlignment.CENTER,
+                        horizontal_alignment=ft.CrossAxisAlignment.END,
+                        spacing=5
                     )
                 ),
+                ft.Container(height=20),
+
+
             ],
             scroll=ft.ScrollMode.AUTO
         )
@@ -88,8 +134,104 @@ class SettingsView(ft.Container):
     def did_mount(self):
         # Determine if we can add to overlay
         if self.page:
-            self.page.overlay.append(self.clear_confirm_dialog)
+            if self.clear_confirm_dialog not in self.page.overlay:
+                self.page.overlay.append(self.clear_confirm_dialog)
+            self.refresh_watched_paths() # Load data when mounted
+            self.load_storage_stats() # Initial load of storage stats
             self.page.update()
+
+    def load_storage_stats(self):
+        """Calculates and updates the storage usage label asynchronously."""
+        def _get_stats():
+            return get_total_storage_usage()
+
+        async def _update_ui():
+            # Run calculation in thread
+            stats = await asyncio.to_thread(_get_stats)
+            self.storage_info_text.value = stats
+            if self.page:
+                self.storage_info_text.update()
+
+        # Run async task
+        asyncio.create_task(_update_ui())
+
+
+    def refresh_watched_paths(self):
+        """Refreshes the list of watched paths."""
+        self.watched_paths_column.controls.clear()
+        paths = self.watcher_manager.get_watched_paths()
+        
+        if not paths:
+             self.watched_paths_column.controls.append(
+                 ft.Text("No folders currently watched.", style=TextStyles.label_small(), italic=True)
+             )
+        else:
+            for p in paths:
+                self.watched_paths_column.controls.append(
+                    self.create_watched_path_item(p)
+                )
+        
+        if self.page:
+            self.watched_paths_column.update()
+
+    def create_watched_path_item(self, path_data):
+        return ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.FOLDER_OPEN, color=ColorPalette.ACCENT),
+                    ft.Column(
+                        [
+                            ft.Text(path_data['path'], style=TextStyles.body_normal(), weight=ft.FontWeight.BOLD),
+                            ft.Text(f"Table: {path_data['table_name']}", style=TextStyles.label_small())
+                        ],
+                        expand=True
+                    ),
+                    ft.IconButton(
+                        ft.Icons.DELETE_OUTLINE, 
+                        icon_color=ColorPalette.ERROR,
+                        tooltip="Stop Watching",
+                        data=path_data['id'],
+                        on_click=self.handle_stop_watching
+                    )
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN
+            ),
+            padding=10,
+            border=ft.Border.all(1, ColorPalette.BORDER),
+            border_radius=8,
+            bgcolor=ColorPalette.BG_SECONDARY
+        )
+
+    async def handle_add_watched_folder(self, e):
+        path = await ft.FilePicker().get_directory_path()
+        if path:
+            NotificationManager.info(f"Initializing watcher for: {path}...")
+            
+            # Run in background to avoid freezing UI logic (though manager calls service which is async/threaded? 
+            # Manager uses synchronous ingestion calls currently. So we MUST run in thread.)
+            
+            def _background_init():
+                return self.watcher_manager.initialize_path(path)
+
+            try:
+                success, msg = await asyncio.to_thread(_background_init)
+                if success:
+                    NotificationManager.success(msg)
+                    self.refresh_watched_paths()
+                else:
+                    NotificationManager.error(msg)
+            except Exception as ex:
+                NotificationManager.error(f"Error: {str(ex)}")
+
+    async def handle_stop_watching(self, e):
+        path_id = e.control.data
+        # stop_watching is sync in manager
+        success, msg = self.watcher_manager.stop_watching(path_id)
+        if success:
+             NotificationManager.success(msg)
+             self.refresh_watched_paths()
+        else:
+             NotificationManager.error(msg)
 
     async def handle_browse_folder(self, e):
         path = await ft.FilePicker().get_directory_path()
@@ -111,16 +253,30 @@ class SettingsView(ft.Container):
         import asyncio
         
         try:
+            # Capture loop for threadsafe calling
+            loop = asyncio.get_running_loop()
+            
+            def progress_callback_wrapper():
+                # Schedule load_storage_stats on the main loop
+                asyncio.run_coroutine_threadsafe(self._update_storage_stats_async(), loop)
+
             # Use asyncio.to_thread to run blocking function in background
-            success, msg, _ = await asyncio.to_thread(ingest_path, path, "parent")
+            success, msg, _ = await asyncio.to_thread(ingest_path, path, "parent", progress_callback_wrapper)
+
             if success:
                 NotificationManager.success(msg)
+                # Final update to be sure
+                self.load_storage_stats()
             else:
                 NotificationManager.error(msg)
         except Exception as ex:
             NotificationManager.error(f"Error: {str(ex)}")
-    
 
+    async def _update_storage_stats_async(self):
+        """Helper to call load_storage_stats from async context."""
+        self.load_storage_stats()
+
+    
 
     async def clear_database(self, e):
         """Triggers the safety confirmation prompt."""
@@ -139,7 +295,6 @@ class SettingsView(ft.Container):
         self.page.update()
         
         # 2. Show loading snack
-        # 2. Show loading snack
         NotificationManager.info("Clearing Vector Database...")
         
         try:
@@ -151,6 +306,8 @@ class SettingsView(ft.Container):
                 print('clear_all_data asyncio completed')
                 
                 NotificationManager.success("Vector database cleared successfully!")
+                self.load_storage_stats() # Update stats after clearing
+
             except Exception as ex:
                 print(f"Error clearing DB: {ex}")
                 NotificationManager.error(f"Failed to clear database: {str(ex)}")
