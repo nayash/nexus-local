@@ -15,9 +15,9 @@ def get_llm(model_name: str = "llama3.1"):
     Instantiates the ChatOllama model with the requested model name.
     """
     llm = ChatOllama(
-        model=model_name,
+        model=model_name, # can be cloud model too, need API Key
         temperature=0,
-        base_url=Config.OLLAMA_BASE_URL,
+        base_url=Config.OLLAMA_BASE_URL, # should point to https://api.ollama.com for cloud models
         headers={"X-Thinking-Mode": "enable"}
     )
     return llm.bind_tools(TOOLS)
@@ -72,8 +72,10 @@ SYSTEM_PROMPT = """You are Nexus, a specialized research assistant with access t
    - For questions about your identity, search data/nexus-identity.txt in lanceDB.
    - DON'T OUTPUT your thoughts to the user.
 
-8. **ERROR HANDLING:**
+8. **ERROR HANDLING & FORMATTING:**
    - Try ONE alternative or apologize. Infinite retries are forbidden.
+   - **CRITICAL**: DO NOT output raw JSON strings (e.g. `{"name": ...}`). ALWAYS use the native tool calling capability.
+   - If you see a tool call in the output but it's just text, you failed. Use the proper tool structure.
 
 9. **SOURCES:**
    - DO NOT list sources in your response.
@@ -81,13 +83,23 @@ SYSTEM_PROMPT = """You are Nexus, a specialized research assistant with access t
 
 10. **STRICT FILE FILTER RULES:**
     - `file_filter` in `local_search_tool` is ONLY for explicitly attached/focused files.
-    - If user mentions a filename but hasn't attached it, include the filename in the `query` argument, NOT `file_filter`.
+    - If user mentions a filename buts hasn't attached it, include the filename in the `query` argument, NOT `file_filter`.
     - Leave `file_filter` as None unless the user has attached a file to the chat.
 
-11. **QUERY PRESERVATION:**
-    - Pass the FULL, relevant query to tools.
-    - DO NOT shorten to keywords. Keep natural language questions intact.
-    - When resolving references like "this paper", expand them in the query: "this paper" → "GAN paper.pdf" (based on context).
+11. **QUERY PRESERVATION & INTENT:**
+    - The search engine uses natural language understanding (NLU) for metadata filtering.
+    - You MUST pass the FULL user question including the INTENT (e.g., "Summarize", "Find author", "List key points").
+    - **INCORRECT**: `local_search_tool(query="GAN paper.pdf")` -> LOSES "Summarize" intent!
+    - **CORRECT**: `local_search_tool(query="Summarize the GAN paper.pdf")` -> PRESERVES intent.
+    - **INCORRECT**: `local_search_tool(query="Project report")`
+    - **CORRECT**: `local_search_tool(query="Find the author of the Project report")`
+
+12. **CRITICAL: STAY FOCUSED ON USER'S ACTUAL QUERY:**
+    - Tool results may contain irrelevant text from logs or past conversations.
+    - ALWAYS respond to the USER'S ORIGINAL QUESTION, not random content you see in tool results.
+    - If tool results contain text about unrelated topics (e.g., user asks about "GAN.pdf" but results mention "puzzle games"), IGNORE the irrelevant content.
+    - If the requested file is not found, acknowledge it clearly: "The file [filename] was not found in local storage."
+    - NEVER hallucinate that the user asked about topics you only saw in tool result logs.
 """
 
 
@@ -121,7 +133,6 @@ def agent_node(state: AgentState):
     print(f'messages: size: {len(messages)} --> {messages}')
     # 1. Retrieve LLM based on UserSettings
     current_model = get_setting("model_name", "llama3.1")
-    current_model = get_setting("model_name", "llama3.1")
     llm_instance = get_cached_llm(current_model, with_tools=True)
         
     # --- FOCUS MODE CHECK ---
@@ -147,43 +158,70 @@ def agent_node(state: AgentState):
     # 2. Invoke the LLM
     response = llm_instance.invoke(messages)
     print(f'llm response: {response}')
+
+    # --- 🛡️ QUERY ENRICHMENT LOGIC ---
+    # Fix LLM truncating query to just filenames (e.g., query="GAN.pdf" vs. "Summarize GAN.pdf")
+    # This ensures the search engine gets the FULL intent for metadata filtering & semantic search.
+    if response.tool_calls:
+        for tool_call in response.tool_calls:
+            if tool_call["name"] == "local_search_tool":
+                args = tool_call.get("args", {})
+                query = args.get("query", "")
+                
+                # Get last user message
+                last_msg = messages[-1]
+                last_user_content = last_msg.content if hasattr(last_msg, "content") else ""
+                
+                # Heuristic: 
+                # 1. Query looks like a filename (ends in extension)
+                # 2. OR Query is significantly shorter than user message (loss of context)
+                # 3. AND User message is not massive (>1000 chars)
+                
+                is_filename_only = re.match(r'^[\w\-. ]+\.(pdf|txt|md|csv|sh)$', query.strip(), re.IGNORECASE)
+                is_truncated = len(query) < len(last_user_content) * 0.5
+                
+                if (is_filename_only or is_truncated) and 0 < len(last_user_content) < 1000:
+                    print(f"   ✨ ENRICHING QUERY: '{query}' -> '{last_user_content}'")
+                    # Update the args in place
+                    # Note: tool_call is a dict-like object in recent LangChain versions or a ToolCall dict
+                    if isinstance(tool_call, dict):
+                         tool_call["args"]["query"] = last_user_content
+                    else:
+                         # If it's an object (depending on version), might need different handling
+                         # But typically response.tool_calls is a list of ToolCall dicts
+                         tool_call["args"]["query"] = last_user_content
+
     # --- 🛡️ RESCUE LOGIC: Fix "Chatty" Tool Calls ---
     # If the model didn't trigger a native tool call, check if it wrote JSON in the text.
     if not response.tool_calls and response.content:
-        content = response.content
+        content = response.content.strip()
         
-        # Regex to find a JSON-like block with either "parameters" or "args"
-        # Pattern: {"name": "...", "parameters"|"args": {...}}
-        json_pattern = r'\{"name":\s*"[^"]+",\s*(?:"parameters"|"args"):\s*\{[^}]*\}\}'
-        match = re.search(json_pattern, content, re.DOTALL)
-        
-        if match:
-            print("   ⚠️ DETECTED CHATTY TOOL CALL. RESCUING...")
-            json_str = match.group(0)
-            try:
+        # Simple heuristic: starts with { and contains "name" and ("parameters" or "args")
+        if content.startswith("{") and '"name":' in content and ('"parameters":' in content or '"args":' in content):
+             print("   ⚠️ DETECTED CHATTY TOOL CALL. RESCUING...")
+             try:
+                # Find the JSON object
+                json_start = content.find("{")
+                json_end = content.rfind("}") + 1
+                json_str = content[json_start:json_end]
+                
                 # Fix Python None -> null for valid JSON
-                json_str_fixed = json_str.replace(': None', ': null')
+                json_str_fixed = json_str.replace(": None", ": null").replace(": True", ": true").replace(": False", ": false")
+                
                 tool_data = json.loads(json_str_fixed)
                 
-                # Extract args from either "parameters" or "args"
                 args = tool_data.get("parameters") or tool_data.get("args", {})
                 
-                # Construct a valid ToolCall object manually
                 tool_call = ToolCall(
                     name=tool_data["name"],
                     args=args,
-                    id="call_rescue_" + str(hash(json_str)) # Unique ID
+                    id="call_rescue_" + str(hash(json_str))
                 )
                 
-                # Attach it to the response so the Graph sees it
                 response.tool_calls = [tool_call]
+                response.content = "" # Silence the chatty output
                 
-                # IMPORTANT: Clear the content so we don't stream the "To answer..." text to the user
-                # OR keep it if you want the thought visible. 
-                # Ideally, clear it so the tool runs cleanly.
-                response.content = "" 
-                
-            except Exception as e:
+             except Exception as e:
                 print(f"   ❌ RESCUE FAILED: {e}")
 
     return {"messages": [response]}

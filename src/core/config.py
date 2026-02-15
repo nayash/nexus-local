@@ -9,7 +9,7 @@ class Config:
     _current_dir = os.path.dirname(os.path.abspath(__file__))
     PROJECT_ROOT = os.path.abspath(os.path.join(_current_dir, "..", ".."))
     
-    SUPPORTED_MODELS = ["llama3.1", "mistral-nemo", "qwen3"]
+    SUPPORTED_MODELS = ["llama3.1", "mistral-nemo", "qwen3", "hermes3:8b"]
     MAX_RESULTS = 5
     TIMEOUT = 10
     SEARXNG_BASE_URL = "http://localhost:8080"

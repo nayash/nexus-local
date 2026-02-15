@@ -18,7 +18,7 @@ class SearchInput(BaseModel):
     )
 
 class LocalSearchInput(BaseModel):
-    query: str = Field(description="The full search query. Do NOT shorten the query to keywords. Pass the full user question or a comprehensive search query.")
+    query: str = Field(description="The FULL natural language query. Ensure you include the action/intent (e.g., 'Summarize...', 'Find author of...'). DO NOT shorten the query to just keywords or filenames. The underlying search engine uses semantic search and metadata filtering, so natural language is required.")
     file_filter: Optional[str] = Field(
         default=None,
         description="The absolute path of a specific file to search within. MUST be a valid, existing path provided in the context (e.g. from `focused_file` state). DO NOT guess or hallucinate paths based on filenames in the query. If the user mentions a filename but has not attached it, include the filename in the `query` field and leave this `file_filter` as None."
