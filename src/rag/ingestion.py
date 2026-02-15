@@ -182,111 +182,111 @@ class NexusIngestor:
             
             document_content_description = "A collection of user's personal files, code, documents, and reports."
 
-        # 4. Construct Query Compiler
-        # Use a custom prompt to help local LLMs understand filename filtering
-        from langchain_core.prompts import ChatPromptTemplate
-        
-        examples = [
-            ("Summarize the file 'GAN paper.pdf'", 
-             {"query": "Summarize the file", "filter": "eq('title', 'GAN paper.pdf')"}),
-            ("What does report_v1.txt say?", 
-             {"query": "What does it say?", "filter": "eq('title', 'report_v1.txt')"}),
-            ("Find documents by author 'Alice'", 
-             {"query": "Find documents", "filter": "eq('author', 'Alice')"}),
-            ("search in 'project_plan.md' for 'timeline'",
-             {"query": "timeline", "filter": "eq('source', 'project_plan.md')"})
-        ]
-        
-        # We use a Chat Model (LLM) to parse natural language queries into structured filters.
-        query_constructor = load_query_constructor_runnable(
-            llm=self.llm,
-            document_contents=document_content_description,
-            attribute_info=metadata_field_info,
-            examples=examples # Pass examples to guide the LLM
-        )
-
-        # 5. Parse Query into structured format
-        structured_query = query_constructor.invoke({"query": query})
-
-        # --- FALLBACK HEURISTIC ---
-        # If LLM failed to extract a filter but query looks like it has a filename
-        if not structured_query.filter:
-            import re
-            from langchain_core.structured_query import Comparison, Comparator, Operation, Operator
+            # 4. Construct Query Compiler
+            # Use a custom prompt to help local LLMs understand filename filtering
+            from langchain_core.prompts import ChatPromptTemplate
             
-            # Look for filenames like "something.ext"
-            # Avoiding common abbreviations like "vs." "e.g." is hard but let's try strict extension matching
-            filename_match = re.search(r'\b([\w\-. ]+\.(pdf|txt|md|csv|sh|py|docx))\b', query, re.IGNORECASE)
+            examples = [
+                ("Summarize the file 'GAN paper.pdf'", 
+                 {"query": "Summarize the file", "filter": "eq('title', 'GAN paper.pdf')"}),
+                ("What does report_v1.txt say?", 
+                 {"query": "What does it say?", "filter": "eq('title', 'report_v1.txt')"}),
+                ("Find documents by author 'Alice'", 
+                 {"query": "Find documents", "filter": "eq('author', 'Alice')"}),
+                ("search in 'project_plan.md' for 'timeline'",
+                 {"query": "timeline", "filter": "eq('source', 'project_plan.md')"})
+            ]
             
-            if filename_match:
-                filename = filename_match.group(1)
-                print(f"--- ⚠️ SELF-QUERY FALLBACK: Detected filename '{filename}' in query. Forcing filter. ---")
-                
-                # Construct a filter: title == filename OR source contains filename (approximated as title for now)
-                # Ideally we check both but let's stick to title for simplicity as per schema
-                structured_query.filter = Comparison(comparator=Comparator.EQ, attribute='title', value=filename)
-
-        print(f"--- USER QUERY: {query} 📝 STRUCTURED QUERY: {structured_query} ---")
-        print(f"    Target Table: {target_table}")
-        
-        # 6. Check if filter exists and apply if needed
-        # structured_query is a StructuredQuery object with 'filter' attribute
-        if structured_query.filter:
-            print(f"--- 🔍 DETECTED FILTER: {structured_query.filter} ---")
-            
-            # 7. Translate to VectorStore filter format
-            # LanceDB (via LangChain) uses specific filter format (SQL-like usually)
-            from langchain.retrievers.self_query.lancedb import LanceDBTranslator
-            translator = LanceDBTranslator()
-            
-            # Visit to get native filter (kwargs)
-            filter_kwargs = translator.visit_structured_query(structured_query)
-            
-            # If filter_kwargs is a tuple, extract filter
-            native_filter = filter_kwargs[0] if isinstance(filter_kwargs, tuple) else filter_kwargs
-            
-            print(f"Applying LanceDB Filter: {native_filter}")
-            
-            # 8. Execute filtered search on the target vectorstore
-            # Search children chunks with metadata filter, then map to parents
-            children = vectorstore.similarity_search(
-                query, 
-                k=k*2, # Fetch more children to ensure we get enough parents
-                filter=native_filter # 'filter' kwarg for LanceDB
+            # We use a Chat Model (LLM) to parse natural language queries into structured filters.
+            query_constructor = load_query_constructor_runnable(
+                llm=self.llm,
+                document_contents=document_content_description,
+                attribute_info=metadata_field_info,
+                examples=examples # Pass examples to guide the LLM
             )
-            
-            # Map to parents
-            parent_ids = set()
-            final_docs = []
-            for child in children:
-                parent_id = child.metadata.get("doc_id") 
-                if parent_id and parent_id not in parent_ids:
-                    try:
-                        parent = self.docstore.mget([parent_id])[0]
-                        if parent:
-                            final_docs.append(parent)
-                            parent_ids.add(parent_id)
-                    except Exception:
-                        pass
-                        
-                    if len(final_docs) >= k:
-                        break
-                        
-            return final_docs
-            
-        else:
-            # No filter detected, use standard semantic search
-            return retriever.invoke(query)[:k]
 
-    except Exception as e:
-        print(f"Self-Query failed for table '{target_table if 'target_table' in locals() else 'unknown'}', falling back to semantic search. Error: {e}")
-        # Fallback: use appropriate retriever based on table
-        if 'retriever' in locals():
-            return retriever.invoke(query)[:k]
-        else:
-            # Create fallback retriever if error occurred during initialization
-            # Re-initialize main retriever if needed, but self.retriever should exist
-            return self.retriever.invoke(query)[:k]
+            # 5. Parse Query into structured format
+            structured_query = query_constructor.invoke({"query": query})
+
+            # --- FALLBACK HEURISTIC ---
+            # If LLM failed to extract a filter but query looks like it has a filename
+            if not structured_query.filter:
+                import re
+                from langchain_core.structured_query import Comparison, Comparator, Operation, Operator
+                
+                # Look for filenames like "something.ext"
+                # Avoiding common abbreviations like "vs." "e.g." is hard but let's try strict extension matching
+                filename_match = re.search(r'\b([\w\-. ]+\.(pdf|txt|md|csv|sh|py|docx))\b', query, re.IGNORECASE)
+                
+                if filename_match:
+                    filename = filename_match.group(1)
+                    print(f"--- ⚠️ SELF-QUERY FALLBACK: Detected filename '{filename}' in query. Forcing filter. ---")
+                    
+                    # Construct a filter: title == filename OR source contains filename (approximated as title for now)
+                    # Ideally we check both but let's stick to title for simplicity as per schema
+                    structured_query.filter = Comparison(comparator=Comparator.EQ, attribute='title', value=filename)
+
+            print(f"--- USER QUERY: {query} 📝 STRUCTURED QUERY: {structured_query} ---")
+            print(f"    Target Table: {target_table}")
+            
+            # 6. Check if filter exists and apply if needed
+            # structured_query is a StructuredQuery object with 'filter' attribute
+            if structured_query.filter:
+                print(f"--- 🔍 DETECTED FILTER: {structured_query.filter} ---")
+                
+                # 7. Translate to VectorStore filter format
+                # LanceDB (via LangChain) uses specific filter format (SQL-like usually)
+                from langchain.retrievers.self_query.lancedb import LanceDBTranslator
+                translator = LanceDBTranslator()
+                
+                # Visit to get native filter (kwargs)
+                filter_kwargs = translator.visit_structured_query(structured_query)
+                
+                # If filter_kwargs is a tuple, extract filter
+                native_filter = filter_kwargs[0] if isinstance(filter_kwargs, tuple) else filter_kwargs
+                
+                print(f"Applying LanceDB Filter: {native_filter}")
+                
+                # 8. Execute filtered search on the target vectorstore
+                # Search children chunks with metadata filter, then map to parents
+                children = vectorstore.similarity_search(
+                    query, 
+                    k=k*2, # Fetch more children to ensure we get enough parents
+                    filter=native_filter # 'filter' kwarg for LanceDB
+                )
+                
+                # Map to parents
+                parent_ids = set()
+                final_docs = []
+                for child in children:
+                    parent_id = child.metadata.get("doc_id") 
+                    if parent_id and parent_id not in parent_ids:
+                        try:
+                            parent = self.docstore.mget([parent_id])[0]
+                            if parent:
+                                final_docs.append(parent)
+                                parent_ids.add(parent_id)
+                        except Exception:
+                            pass
+                            
+                        if len(final_docs) >= k:
+                            break
+                            
+                return final_docs
+                
+            else:
+                # No filter detected, use standard semantic search
+                return retriever.invoke(query)[:k]
+
+        except Exception as e:
+            print(f"Self-Query failed for table '{target_table if 'target_table' in locals() else 'unknown'}', falling back to semantic search. Error: {e}")
+            # Fallback: use appropriate retriever based on table
+            if 'retriever' in locals():
+                return retriever.invoke(query)[:k]
+            else:
+                # Create fallback retriever if error occurred during initialization
+                # Re-initialize main retriever if needed, but self.retriever should exist
+                return self.retriever.invoke(query)[:k]
 
     def _get_or_create_vectorstore(self, table_name: str):
         """
