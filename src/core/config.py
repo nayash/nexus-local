@@ -25,3 +25,10 @@ class Config:
     WEB_SEARCH_PROVIDER: str = os.getenv("WEB_SEARCH_PROVIDER", "tavily")
     TAVILY_API_KEY: str  = os.getenv("TAVILY_API_KEY", "")
     SERPER_API_KEY: str  = os.getenv("SERPER_API_KEY", "")
+
+    # Code Execution Sandbox — "docker" | "pyodide" (default: pyodide, no Docker required)
+    CODE_SANDBOX_ENGINE: str = os.getenv("CODE_SANDBOX_ENGINE", "pyodide")
+    DOCKER_SANDBOX_IMAGE: str = "nexus-sandbox:latest"
+    DOCKER_TIMEOUT: int = 30
+    DOCKER_MEM_LIMIT: str = "256m"
+    PYODIDE_TIMEOUT: int = 30

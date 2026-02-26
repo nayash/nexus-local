@@ -28,3 +28,6 @@ watchdog
 
 # Parser
 lark
+
+# Docker Sandbox (optional — only needed if CODE_SANDBOX_ENGINE=docker)
+docker>=7.0.0
