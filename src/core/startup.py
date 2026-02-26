@@ -106,19 +106,9 @@ class StartupManager:
 
     def _check_dependencies(self) -> bool:
         """Verify critical libraries are importable."""
-        required_deps = [
-            "flet", "langgraph", "ddgs", 
-            "lancedb", "pypdf", "pandas",
-            "watchdog", "lark"
-        ]
         try:
-            # We just try functionality or just existence? 
-            # User said: "Verify that critical libraries are importable"
-            # Since we are running inside the env, simple imports should work.
-            # However, doing 'import flet' here just tests current env.
             import flet
             import langgraph
-            import ddgs
             import lancedb
             import pypdf
             import pandas
@@ -126,6 +116,15 @@ class StartupManager:
             import requests
             import pydantic
             import lark
+            import langchain_community  # includes GoogleSerperAPIWrapper
+
+            # Check for optional web search API key — warn but do not block startup
+            from src.core.config import Config
+            provider = Config.WEB_SEARCH_PROVIDER.lower()
+            if provider == "tavily" and not Config.TAVILY_API_KEY:
+                print("⚠️ TAVILY_API_KEY not set — web search will be disabled.")
+            elif provider == "serper" and not Config.SERPER_API_KEY:
+                print("⚠️ SERPER_API_KEY not set — web search will be disabled.")
 
             return True
         except ImportError as e:
@@ -133,9 +132,9 @@ class StartupManager:
             return False
 
     def _check_internet_connection(self) -> bool:
-        """Ping DuckDuckGo to verify connectivity."""
+        """Ping Google to verify connectivity."""
         try:
-            response = requests.get("https://duckduckgo.com", timeout=5)
+            response = requests.get("https://www.google.com", timeout=5)
             return response.status_code == 200
         except requests.RequestException:
             return False
