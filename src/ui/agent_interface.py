@@ -62,13 +62,14 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
         
         # Filter for LLM streaming events
         if kind == "on_chat_model_stream":
-            # We want to ignore tool calls chunks if possible, or handle them.
-            # Usually 'chunk' content is just the text delta.
             data = event["data"]
             if "chunk" in data:
                 chunk = data["chunk"]
-                # chunk is a BaseMessageChunk (AIMessageChunk)
-                if hasattr(chunk, "content") and chunk.content:
+                # Only yield text content — skip chunks that are part of a tool call.
+                # When the LLM is building a tool call, tool_call_chunks is populated
+                # and chunk.content is the JSON argument string (not for users to see).
+                is_tool_call_chunk = bool(getattr(chunk, "tool_call_chunks", None))
+                if not is_tool_call_chunk and hasattr(chunk, "content") and chunk.content:
                     yield chunk.content
 
         elif kind == "on_tool_end":
