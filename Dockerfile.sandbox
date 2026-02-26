@@ -1,0 +1,13 @@
+# Minimal sandbox image for Nexus code execution.
+# Security: non-root user, no network at runtime (enforced by Docker run flags).
+
+FROM python:3.11-slim
+
+# Install common data-science libraries
+RUN pip install --no-cache-dir numpy pandas sympy
+
+# Create a non-root user
+RUN useradd --create-home --shell /bin/bash sandbox
+
+USER sandbox
+WORKDIR /home/sandbox

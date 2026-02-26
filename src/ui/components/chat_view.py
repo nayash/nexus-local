@@ -1,4 +1,5 @@
 import asyncio
+import os
 import flet as ft
 from styles import ColorPalette, TextStyles
 from src.core.config import Config
@@ -218,13 +219,37 @@ class ChatView(ft.Container):
         except Exception as e:
             print(f"Error generating title: {e}")
     
+    def _is_file_already_indexed(self, file_path: str, table_name: str = "documents") -> bool:
+        """Check if this file path already has entries in the vector DB, to avoid re-ingestion."""
+        try:
+            from src.rag.storage import get_table, get_source_field_for_table
+            abs_path = os.path.abspath(file_path)
+            tbl = get_table(table_name)
+            if tbl is None:
+                return False
+            source_field = get_source_field_for_table(tbl)
+            # Query for at least one row with this source path
+            results = tbl.search().where(f"{source_field} = '{abs_path}'", prefilter=True).limit(1).to_list()
+            return len(results) > 0
+        except Exception as ex:
+            print(f"Error checking if file indexed: {ex}")
+            return False  # On error, assume not indexed so we ingest safely
+
     async def handle_attach_file(self, e):
         try:
             files = await ft.FilePicker().pick_files(allow_multiple=False)
             if files:
                 file_path = files[0].path
-                # Show loading notification
-                NotificationManager.info(f"Focusing on {files[0].name}...")
+                
+                # Skip ingestion if this exact file is already in the vector DB
+                if self._is_file_already_indexed(file_path):
+                    print(f"File already indexed, skipping ingestion: {file_path}")
+                    self.app_page.data["focused_file"] = file_path
+                    self.update_focus_ui(file_path)
+                    NotificationManager.success(f"Focused on {files[0].name}.")
+                    return
+
+                NotificationManager.info(f"Indexing and focusing on {files[0].name}...")
                 
                 # Ingest quietly
                 from src.rag.ingestion import ingest_file
@@ -373,6 +398,19 @@ class ChatView(ft.Container):
             # Type Safety Check
             if not isinstance(text, str):
                 text = str(text)
+
+            # Strip wrapping code fences that some models accidentally add
+            # e.g. ```\nThe answer is...\n``` → The answer is...
+            stripped = text.strip()
+            if stripped.startswith("```") and stripped.endswith("```") and stripped.count("```") == 2:
+                # Remove the opening fence (and optional language tag) and the closing fence
+                inner = stripped[3:]  # remove opening ```
+                newline_pos = inner.find("\n")
+                if newline_pos != -1:
+                    inner = inner[newline_pos + 1:]  # skip optional language tag line
+                if inner.endswith("```"):
+                    inner = inner[:-3]
+                text = inner.strip()
 
             # 1. Check for <think> block
             # We only handle ONE think block for now (standard for R1/DeepSeek)

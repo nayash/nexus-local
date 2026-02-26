@@ -1,153 +1,275 @@
+"""
+Web search module — supports multiple providers via a common interface.
+
+Providers:
+  - TavilySearchClient  : uses langchain_community TavilySearchResults
+  - SerperSearchClient  : uses langchain_community GoogleSerperAPIWrapper
+
+Active provider is controlled by Config.WEB_SEARCH_PROVIDER ("tavily" | "serper").
+Switch in config.py or via the WEB_SEARCH_PROVIDER environment variable.
+"""
+
 import logging
+from abc import ABC, abstractmethod
 from typing import List, Optional
-from ddgs import DDGS
+
+from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_community.utilities import GoogleSerperAPIWrapper
+
 from src.core.config import Config
 from src.tools.schemas import SearchResult
 
-# Configure structured logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Map standard "Intent" categories to DuckDuckGo specific behavior if needed
-# For now, we primarily just log them as DDG is a general engine.
-CATEGORY_MAP = {
-    "general": "general",
-    "news": "news", 
-    "science": "science",
-    "it": "it",
-    "files": "files",
-    "images": "images",
-    "videos": "videos"
-}
+VALID_CATEGORIES = {"general", "news", "science", "it", "files", "images", "videos"}
 
-# Map time_range to DDGS timelimit codes
-TIME_RANGE_MAP = {
-    "day": "d",
-    "week": "w",
-    "month": "m",
-    "year": "y"
-}
+# Time range helpers
+_TIME_RANGE_DAYS = {"day": 1, "week": 7, "month": 30, "year": 365}
+_TIME_RANGE_TBS  = {"day": "qdr:d", "week": "qdr:w", "month": "qdr:m", "year": "qdr:y"}
+
+
+# ---------------------------------------------------------------------------
+# Abstract base
+# ---------------------------------------------------------------------------
+
+class BaseSearchClient(ABC):
+    """Common interface all search provider clients must implement."""
+
+    @abstractmethod
+    def search(self, query: str, category: str, time_range: str) -> List[SearchResult]:
+        """
+        Execute a search and return a list of SearchResult objects.
+
+        Args:
+            query:      Search text.
+            category:   One of VALID_CATEGORIES.
+            time_range: One of '', 'day', 'week', 'month', 'year'.
+        """
+
+
+# ---------------------------------------------------------------------------
+# Tavily provider
+# ---------------------------------------------------------------------------
+
+class TavilySearchClient(BaseSearchClient):
+    """
+    Search client backed by Tavily via LangChain's TavilySearchResults tool.
+
+    Requires TAVILY_API_KEY in the environment.
+    Supported categories: general, news (others silently fall back to general).
+    """
+
+    _TOPIC_MAP = {"news": "news"}
+    _FALLBACK_CATEGORIES = {"science", "it", "files", "images", "videos"}
+
+    def __init__(self, api_key: str, max_results: int):
+        self._api_key = api_key
+        self._max_results = max_results
+
+    def _build_tool(self, topic: str, days: Optional[int]) -> TavilySearchResults:
+        kwargs = dict(
+            tavily_api_key=self._api_key,
+            max_results=self._max_results,
+            topic=topic,
+            include_answer=False,
+        )
+        if days is not None and topic == "news":
+            kwargs["days"] = days
+        return TavilySearchResults(**kwargs)
+
+    def search(self, query: str, category: str, time_range: str) -> List[SearchResult]:
+        if category in self._FALLBACK_CATEGORIES:
+            logger.warning(f"⚠️ Tavily: category '{category}' unsupported — falling back to general.")
+
+        topic = self._TOPIC_MAP.get(category, "general")
+        days  = _TIME_RANGE_DAYS.get(time_range, None)
+        tool  = self._build_tool(topic=topic, days=days)
+
+        # Returns: [{"title": ..., "url": ..., "content": ...}, ...]
+        raw: list = tool.invoke(query)
+
+        return [
+            SearchResult(
+                title=item.get("title", "No Title"),
+                url=item.get("url", ""),
+                content=item.get("content", ""),
+                source="tavily",
+            )
+            for item in raw
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Serper provider
+# ---------------------------------------------------------------------------
+
+class SerperSearchClient(BaseSearchClient):
+    """
+    Search client backed by Serper.dev via LangChain's GoogleSerperAPIWrapper.
+
+    Requires SERPER_API_KEY in the environment.
+    Supported categories: general, news, images (others fall back to general).
+    """
+
+    _TYPE_MAP = {"news": "news", "images": "images"}
+    _FALLBACK_CATEGORIES = {"science", "it", "files", "videos"}
+
+    def __init__(self, api_key: str, max_results: int):
+        self._api_key = api_key
+        self._max_results = max_results
+
+    def _build_wrapper(self, search_type: str, tbs: Optional[str]) -> GoogleSerperAPIWrapper:
+        kwargs = dict(
+            serper_api_key=self._api_key,
+            k=self._max_results,
+            type=search_type,
+        )
+        if tbs:
+            kwargs["tbs"] = tbs
+        return GoogleSerperAPIWrapper(**kwargs)
+
+    def search(self, query: str, category: str, time_range: str) -> List[SearchResult]:
+        if category in self._FALLBACK_CATEGORIES:
+            logger.warning(f"⚠️ Serper: category '{category}' unsupported — falling back to general.")
+
+        search_type = self._TYPE_MAP.get(category, "search")
+        tbs         = _TIME_RANGE_TBS.get(time_range, None)
+        wrapper     = self._build_wrapper(search_type=search_type, tbs=tbs)
+
+        # Returns a dict with keys: "organic", "news", "images", ...
+        raw: dict = wrapper.results(query)
+
+        results: List[SearchResult] = []
+
+        if search_type == "news":
+            for item in raw.get("news", []):
+                results.append(SearchResult(
+                    title=item.get("title", "No Title"),
+                    url=item.get("link", ""),
+                    content=item.get("snippet", ""),
+                    source="serper",
+                ))
+        elif search_type == "images":
+            for item in raw.get("images", []):
+                results.append(SearchResult(
+                    title=item.get("title", "No Title"),
+                    url=item.get("imageUrl", "") or item.get("link", ""),
+                    content=f"Source: {item.get('source', '')} | {item.get('imageWidth', '')}x{item.get('imageHeight', '')}",
+                    source="serper",
+                ))
+        else:
+            for item in raw.get("organic", []):
+                results.append(SearchResult(
+                    title=item.get("title", "No Title"),
+                    url=item.get("link", ""),
+                    content=item.get("snippet", ""),
+                    source="serper",
+                ))
+
+        return results
+
+
+# ---------------------------------------------------------------------------
+# Provider factory
+# ---------------------------------------------------------------------------
+
+def get_search_client() -> Optional[BaseSearchClient]:
+    """
+    Instantiate the configured search provider.
+
+    Returns None (with a logged error) if the required API key is missing.
+    Provider is selected via Config.WEB_SEARCH_PROVIDER ("tavily" | "serper").
+    """
+    provider = Config.WEB_SEARCH_PROVIDER.lower()
+
+    if provider == "tavily":
+        api_key = Config.TAVILY_API_KEY
+        if not api_key:
+            logger.error("❌ TAVILY_API_KEY is not set. Web search is disabled.")
+            return None
+        return TavilySearchClient(api_key=api_key, max_results=Config.MAX_RESULTS)
+
+    if provider == "serper":
+        api_key = Config.SERPER_API_KEY
+        if not api_key:
+            logger.error("❌ SERPER_API_KEY is not set. Web search is disabled.")
+            return None
+        return SerperSearchClient(api_key=api_key, max_results=Config.MAX_RESULTS)
+
+    logger.error(f"❌ Unknown WEB_SEARCH_PROVIDER '{provider}'. Must be 'tavily' or 'serper'.")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Public entry point (unchanged signature)
+# ---------------------------------------------------------------------------
 
 def search_web(query: str, category: str = "general", time_range: str = "") -> List[SearchResult]:
     """
-    Searches the web using DuckDuckGo via 'ddgs' library.
-    Matches the signature and behavior of the SearXNG implementation.
-    
+    Search the web using the configured provider (Tavily or Serper).
+
     Args:
-        query: The search text.
-        category: 'general', 'news', 'science', etc. (Used for logging/filtering context)
-        time_range: 'day', 'week', 'month', 'year' (or empty string)
+        query:      The search text.
+        category:   One of 'general', 'news', 'science', 'it', 'files', 'images', 'videos'.
+        time_range: One of '' (anytime), 'day', 'week', 'month', 'year'.
+
+    Returns:
+        A list of SearchResult objects — always non-empty (system message on failure).
     """
-    # 1. FAIL-SAFE: Category Validation
-    # If agent guesses a category like 'finance', silently fallback to 'general'
-    # to prevent the agent from getting stuck in an error loop.
-    valid_categories = ["general", "news", "science", "it", "files", "images", "videos"]
-    if category not in valid_categories:
-        logger.warning(f"⚠️ Agent requested invalid category '{category}'. Defaulting to 'general'.")
+    # --- Category validation ---
+    if category not in VALID_CATEGORIES:
+        logger.warning(f"⚠️ Invalid category '{category}'. Defaulting to 'general'.")
         category = "general"
 
-    # Resolve time limit
-    timelimit = TIME_RANGE_MAP.get(time_range, None)
+    # --- Resolve provider ---
+    client = get_search_client()
+    if client is None:
+        provider = Config.WEB_SEARCH_PROVIDER
+        key_name = "TAVILY_API_KEY" if provider == "tavily" else "SERPER_API_KEY"
+        return [SearchResult(
+            title="Web Search Unavailable",
+            url="",
+            content=f"Web search is disabled because {key_name} is not configured.",
+            source="system",
+        )]
 
     try:
-        logger.info(f"Searching web using DDG for: '{query}' | Cat: {category} | Time: {time_range}")
-        
-        results = []
-        
-        # Initialize DDGS context
-        with DDGS() as ddgs:
-            ddgs_gen = None
-            
-            if category == "news":
-                ddgs_gen = ddgs.news(
-                    query,
-                    region='wt-wt',
-                    safesearch='moderate',
-                    timelimit=timelimit, # support d, w, m
-                    max_results=Config.MAX_RESULTS
-                )
-            elif category == "images":
-                ddgs_gen = ddgs.images(
-                    query,
-                    region='wt-wt',
-                    safesearch='moderate',
-                    timelimit=timelimit, # support Day, Week, Month
-                    max_results=Config.MAX_RESULTS
-                )
-            elif category == "videos":
-                 ddgs_gen = ddgs.videos(
-                    query,
-                    region='wt-wt',
-                    safesearch='moderate',
-                    timelimit=timelimit, # support w, m
-                    max_results=Config.MAX_RESULTS
-                )
-            else:
-                # General text search (Covers 'general', 'science', 'it', and fallbacks)
-                ddgs_gen = ddgs.text(
-                    query,
-                    region='wt-wt',
-                    safesearch='moderate',
-                    timelimit=timelimit,
-                    max_results=Config.MAX_RESULTS
-                )
-            
-            # Process results if generator is not None
-            if ddgs_gen:
-                for item in ddgs_gen:
-                    # Normalize fields based on result type
-                    title = item.get("title", "No Title")
-                    
-                    if category == "images":
-                        href = item.get("image", "") or item.get("url", "")
-                        body = f"Source: {item.get('source','')} | Width: {item.get('width','')} | Height: {item.get('height','')}"
-                    elif category == "videos":
-                         href = item.get("content", "") # video url usually here or 'embed_url'
-                         if not href: href = item.get("embed_url", "")
-                         body = item.get("description", "")
-                    elif category == "news":
-                        href = item.get("url", "")
-                        body = item.get("body", "") or item.get("excerpt", "")
-                    else:
-                        href = item.get("href", "")
-                        body = item.get("body", "")
-                    
-                    # (Optional) JUNK FILTER implementation
-                    # Filter out noisy social media login pages often returned in news/web
-                    if any(x in href.lower() for x in ["instagram.com/accounts/login", "facebook.com/login", "twitter.com/login"]):
-                        continue
+        logger.info(
+            f"Searching via {Config.WEB_SEARCH_PROVIDER}: '{query}' | "
+            f"Cat: {category} | Time: {time_range}"
+        )
+        results = client.search(query=query, category=category, time_range=time_range)
 
-                    result = SearchResult(
-                        title=title,
-                        url=href,
-                        content=body,
-                        source="duckduckgo"
-                    )
-                    # Only log first few to avoid clutter
-                    if len(results) < 3:
-                        logger.info(f'appending web result: {title[:30]}...')
-                    results.append(result)
+        # --- Junk filter ---
+        results = [
+            r for r in results
+            if not any(
+                x in r.url.lower()
+                for x in ["instagram.com/accounts/login", "facebook.com/login", "twitter.com/login"]
+            )
+        ]
 
-        # 2. FAIL-SAFE: Empty Results
-        # Return a specific object so the Agent knows it failed to find data
+        for r in results[:3]:
+            logger.info(f"  ↳ {r.title[:50]}...")
+
         if not results:
-            logger.info("⚠️ No results found. returning empty state.")
+            logger.warning("⚠️ No results found.")
             return [SearchResult(
                 title="No Results Found",
                 url="",
-                content=f"The search engine returned 0 results for the query: '{query}'. Please try a different query or broader keywords.",
-                source="system"
+                content=f"The search engine returned 0 results for: '{query}'. Try different keywords.",
+                source="system",
             )]
 
-        logger.info(f"✅ Found {len(results)} results.")
+        logger.info(f"✅ {len(results)} results returned.")
         return results
 
     except Exception as e:
-        logger.error(f"❌ Unexpected error during search: {e}")
-        # Return a single error result instead of an empty list
+        logger.error(f"❌ Search error: {e}")
         return [SearchResult(
             title="Error",
             url="http://error",
             content=f"Search tool failed with error: {str(e)}",
-            source="error"
+            source="error",
         )]

@@ -6,6 +6,7 @@ from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from src.core.config import Config
+from src.core.user_settings import get_setting
 from src.rag.ingestion import ingest_file
 from src.core.database import WatchedPathsRepository, ChatRepository # Just to be safe, though not needed directly here yet
 from src.rag.storage import get_db_connection, get_table, get_source_field_for_table
@@ -17,7 +18,7 @@ class Organizer:
     """
     def __init__(self):
         self.llm = ChatOllama(
-            model="llama3.1",
+            model=get_setting("model_name", "llama3.1"),
             base_url=Config.OLLAMA_BASE_URL,
             temperature=0
         )

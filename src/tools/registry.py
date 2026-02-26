@@ -18,7 +18,7 @@ class SearchInput(BaseModel):
     )
 
 class LocalSearchInput(BaseModel):
-    query: str = Field(description="The full search query. Do NOT shorten the query to keywords. Pass the full user question or a comprehensive search query.")
+    query: str = Field(description="The FULL natural language query. Ensure you include the action/intent (e.g., 'Summarize...', 'Find author of...'). DO NOT shorten the query to just keywords or filenames. The underlying search engine uses semantic search and metadata filtering, so natural language is required.")
     file_filter: Optional[str] = Field(
         default=None,
         description="The absolute path of a specific file to search within. MUST be a valid, existing path provided in the context (e.g. from `focused_file` state). DO NOT guess or hallucinate paths based on filenames in the query. If the user mentions a filename but has not attached it, include the filename in the `query` field and leave this `file_filter` as None."
@@ -93,5 +93,42 @@ def get_current_time():
     # We return a string that explicitly tells the LLM what to do
     return f"The Current Date and Time is {now.strftime('%Y-%m-%d %H:%M:%S')}. You MUST use the year {now.year} for all age calculations. Ignore your training data."
 
+
+# --- Code Execution Tool ---
+class CodeExecutionInput(BaseModel):
+    code: str = Field(
+        description=(
+            "Complete, self-contained Python code to execute. "
+            "The code MUST print its final answer to stdout via print(). "
+            "Available libraries: numpy, pandas, sympy. No network access."
+        )
+    )
+
+@tool(args_schema=CodeExecutionInput)
+def execute_python_code(code: str) -> str:
+    """
+    Execute Python code in a secure, isolated sandbox and return the output.
+    Use this for computation, math, data analysis, or any logic that
+    cannot be answered by web/local search alone.
+    The sandbox has NO network access and NO access to user files.
+    Always print() your final answer.
+    """
+    from src.tools.code_executor import execute_python_in_sandbox
+    result = execute_python_in_sandbox(code)
+    
+    if result.timed_out:
+        return f"⏱️ Code execution timed out after the allowed time limit.\nPartial stderr:\n{result.stderr}"
+    
+    output_parts = []
+    if result.stdout:
+        output_parts.append(f"Output:\n{result.stdout}")
+    if result.stderr:
+        output_parts.append(f"Errors:\n{result.stderr}")
+    if result.exit_code != 0 and not output_parts:
+        output_parts.append(f"Code exited with error code {result.exit_code}.")
+    
+    return "\n".join(output_parts) if output_parts else "Code executed successfully with no output."
+
+
 # List of tools available to the brain
-TOOLS = [web_search_tool, local_search_tool, get_current_time]
+TOOLS = [web_search_tool, local_search_tool, get_current_time, execute_python_code]

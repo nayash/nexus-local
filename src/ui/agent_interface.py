@@ -54,28 +54,58 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
     print(f"--- 🚀 LAUNCHING AGENT with query: {query} ---")
     
     # 3. Stream Events
-    # We use 'astream_events' to get granular token updates.
-    # We assume the LLM is the one generating chunks under 'on_chat_model_stream'.
-    
+    #
+    # ROOT CAUSE / KEY FIX:
+    # Ollama does NOT populate `tool_call_chunks` on streaming AIMessageChunks.
+    # When qwen3 (or any Ollama model) decides to call a tool, it streams the
+    # tool-call JSON as plain TEXT content chunks — there is no way to distinguish
+    # them from a real text response mid-stream.  Only after the stream ends does
+    # Ollama set `tool_calls` on the final AIMessage.
+    #
+    # Fix: buffer all streamed chunks per LLM invocation (keyed by run_id).
+    # On `on_chat_model_end`, inspect the final output:
+    #   - output has tool_calls  →  discard buffer (JSON must not reach the UI)
+    #   - output has no tool_calls  →  yield the buffer (it is the real answer)
+    #
+    # Trade-off: the final answer is shown all-at-once instead of token-by-token.
+    # This is acceptable because the tool-execution wait already gives visible progress.
+
+    llm_buffers: dict = {}  # run_id -> list[str]
+
     async for event in graph.astream_events(inputs, version="v2"):
         kind = event["event"]
-        
-        # Filter for LLM streaming events
-        if kind == "on_chat_model_stream":
-            # We want to ignore tool calls chunks if possible, or handle them.
-            # Usually 'chunk' content is just the text delta.
-            data = event["data"]
-            if "chunk" in data:
-                chunk = data["chunk"]
-                # chunk is a BaseMessageChunk (AIMessageChunk)
-                if hasattr(chunk, "content") and chunk.content:
-                    yield chunk.content
+        run_id = event.get("run_id", "")
+
+        # CRITICAL: Only process LLM events from the "agent" node.
+        # Tools (e.g. local_search_tool) invoke their own internal LLMs
+        # (query_constructor in _search_with_filter) which also fire
+        # on_chat_model_* events. Those produce JSON like
+        # {"query": "...", "filter": "NO_FILTER"} that must NOT reach the UI.
+        langgraph_node = event.get("metadata", {}).get("langgraph_node")
+
+        if kind == "on_chat_model_start" and langgraph_node == "agent":
+            llm_buffers[run_id] = []
+
+        elif kind == "on_chat_model_stream" and langgraph_node == "agent":
+            data = event.get("data", {})
+            chunk = data.get("chunk")
+            if chunk and hasattr(chunk, "content") and chunk.content:
+                llm_buffers.setdefault(run_id, []).append(chunk.content)
+
+        elif kind == "on_chat_model_end" and langgraph_node == "agent":
+            data = event.get("data", {})
+            output = data.get("output")
+            buffered = llm_buffers.pop(run_id, [])
+
+            # Also skip if this agent LLM invocation was just making a tool call
+            has_tool_call = bool(output and getattr(output, "tool_calls", None))
+
+            if not has_tool_call and buffered:
+                for text_chunk in buffered:
+                    yield text_chunk
 
         elif kind == "on_tool_end":
             # Capture sources from tool output
-            # 1. Check for new LangChain 'artifact' field (response_format="content_and_artifact")
-            # 2. Fall back to event['output'] tuple (our custom legacy format)
-            
             data = event.get("data", {})
             artifact = data.get("artifact")
             output = data.get("output")
@@ -86,13 +116,12 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
 
             metadata = []
             
-            # --- Artifact Handling ---
-            # 1. Direct artifact in event data (sometimes LangGraph puts it here)
+            # 1. Direct artifact in event data
             if artifact and isinstance(artifact, list):
                 print("DEBUG TOOL END: Found artifact in event data")
                 metadata = artifact
                 
-            # 2. Artifact inside ToolMessage (standard LangChain object)
+            # 2. Artifact inside ToolMessage object
             elif hasattr(output, 'artifact') and output.artifact and isinstance(output.artifact, list):
                 print("DEBUG TOOL END: Found artifact in ToolMessage object")
                 metadata = output.artifact
@@ -103,27 +132,19 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
                 _, metadata = output
             
             if metadata:
-                # Accumulate sources
                 if "sources" not in context:
                     context["sources"] = []
-                
-                # Add unique sources
                 for item in metadata:
                     if item not in context["sources"]:
                         context["sources"].append(item)
                             
-    # Final step: If we have sources, append them to the stream
+    # Final step: append source citations
     if context.get("sources"):
         from urllib.parse import quote
         yield "\n\n### Sources\n"
         for i, src in enumerate(context["sources"], 1):
             title = src.get('title', 'Unknown Title')
             url = src.get('url', '#')
-            
-            # URL-encode local file paths to handle spaces
-            # Web URLs should work as-is
             if not url.startswith('http'):
-                # Local file - encode for Markdown
                 url = quote(url, safe='/:')
-            
             yield f"{i}. [{title}]({url})\n"
