@@ -235,24 +235,30 @@ class NexusIngestor:
                 print(f"--- 🔍 DETECTED FILTER: {structured_query.filter} ---")
                 
                 # 7. Translate to VectorStore filter format
-                # LanceDB (via LangChain) uses specific filter format (SQL-like usually)
-                from langchain.retrievers.self_query.lancedb import LanceDBTranslator
+                from src.rag.translators import LanceDBTranslator, resolve_lancedb_filter
                 translator = LanceDBTranslator()
-                
-                # Visit to get native filter (kwargs)
-                filter_kwargs = translator.visit_structured_query(structured_query)
-                
-                # If filter_kwargs is a tuple, extract filter
-                native_filter = filter_kwargs[0] if isinstance(filter_kwargs, tuple) else filter_kwargs
-                
-                print(f"Applying LanceDB Filter: {native_filter}")
+                _, filter_kwargs = translator.visit_structured_query(structured_query)
+                native_filter = filter_kwargs.get("filter")
+
+                # 7b. Schema guard: validate and rewrite filter against the target table schema.
+                # Handles naive tables (flat schema) and parent-child tables (metadata struct).
+                # See src/rag/translators.py :: resolve_lancedb_filter for full details.
+                resolution = resolve_lancedb_filter(native_filter, vectorstore._table.schema)
+
+                if resolution.rewrites:
+                    print(f"--- 🔄 FILTER REWRITE: {resolution.rewrites} → metadata.<col> (nested struct) ---")
+                if not resolution.applicable:
+                    print(f"--- ⚠️ FILTER SKIPPED: Column(s) {resolution.skipped} absent from table '{target_table}'. Falling back to semantic search. ---")
+
+                print(f"Applying LanceDB Filter: {resolution.filter}" if resolution.applicable else "No filter applied — using semantic search only.")
+
                 
                 # 8. Execute filtered search on the target vectorstore
                 # Search children chunks with metadata filter, then map to parents
                 children = vectorstore.similarity_search(
-                    query, 
-                    k=k*2, # Fetch more children to ensure we get enough parents
-                    filter=native_filter # 'filter' kwarg for LanceDB
+                    query,
+                    k=k*2,  # Fetch more children to ensure we get enough parents
+                    filter=resolution.filter  # None when filter was skipped
                 )
                 
                 # Map to parents

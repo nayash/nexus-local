@@ -26,6 +26,8 @@ class ChatView(ft.Container):
         self.padding = 0  # Padding handling inside
         self.content = self.build_content()
         self.is_processing = False
+        self._streaming_bot_message_control = None
+        self._streaming_response_buffer = ""
 
     def build_content(self):
         # File Viewer Dialog
@@ -141,7 +143,7 @@ class ChatView(ft.Container):
         print(f"current_chat_id set to: {self.current_chat_id}")
         self.chat_history.controls.clear()
         self.add_message("Nexus is ready. Ask me anything.", is_user=False)
-        self.chat_history.update()
+        self._safe_update_chat_history()
 
     def load_chat(self, chat_id):
         self.clear_focus(None) # Clear any existing file focus
@@ -158,7 +160,50 @@ class ChatView(ft.Container):
         except Exception as e:
             NotificationManager.error(f"Failed to load chat: {e}")
             
-        self.chat_history.update()
+        self._safe_update_chat_history()
+
+    def on_show(self):
+        """
+        Called when ChatView becomes visible again.
+        Re-sync with DB after background completion if needed.
+        """
+        if self.current_chat_id:
+            # Always rehydrate chat from DB when returning to this view.
+            self._refresh_current_chat_from_db()
+
+        if self.is_processing:
+            # Recreate the live processing bubble on the visible view and point
+            # stream updates at this new control.
+            thinking_text = self._streaming_response_buffer if self._streaming_response_buffer else "Thinking..."
+            self._streaming_bot_message_control = self.add_message(thinking_text, is_user=False)
+            self._safe_update_chat_history()
+
+    def _refresh_current_chat_from_db(self):
+        """Reload current chat messages without changing focused-file state."""
+        if not self.current_chat_id:
+            return
+
+        self.chat_history.controls.clear()
+        try:
+            messages = self.repo.get_chat_history(self.current_chat_id)
+            if not messages:
+                self.add_message("Start of conversation.", is_user=False)
+            for msg in messages:
+                self.add_message(msg["content"], is_user=(msg["role"] == "user"))
+        except Exception as e:
+            NotificationManager.error(f"Failed to refresh chat: {e}")
+        self._safe_update_chat_history()
+
+    def _safe_update_chat_history(self):
+        """
+        Update chat history only when attached.
+        Detached controls can raise runtime errors during navigation.
+        """
+        try:
+            if self.chat_history.page is not None:
+                self.chat_history.update()
+        except RuntimeError:
+            pass
 
     def _generate_title_async(self, chat_id, query):
         """
@@ -305,8 +350,11 @@ class ChatView(ft.Container):
             return
 
         self.is_processing = True
+        self._streaming_response_buffer = ""
+        self._streaming_bot_message_control = None
         self.input_field.value = ""
-        self.input_field.update()
+        if self.input_field.page is not None:
+            self.input_field.update()
         
         # --- Persistence Start ---
         print(f"\n=== SEND_MESSAGE: current_chat_id at start: {self.current_chat_id} ===")
@@ -351,6 +399,7 @@ class ChatView(ft.Container):
         # 2. Show "Thinking" Placeholder
         thinking_text = "Thinking..."
         bot_message_control = self.add_message(thinking_text, is_user=False)
+        self._streaming_bot_message_control = bot_message_control
         
         # 3. Stream Response
         full_response = ""
@@ -367,9 +416,14 @@ class ChatView(ft.Container):
             # and run_agent_stream appends 'query' to the history it receives.
             async for chunk in run_agent_stream(query, history[:-1], context):
                 full_response += chunk
+                self._streaming_response_buffer = full_response
                 # Re-parse and update the entire content of the bubble
-                bot_message_control.content = self._parse_message_content(full_response)
-                bot_message_control.update()
+                target_control = self._streaming_bot_message_control or bot_message_control
+                target_control.content = self._parse_message_content(full_response)
+                # Update via parent (chat_history) instead of the bubble directly,
+                # because the bubble may not have a page reference yet if
+                # the initial chat_history.update() in add_message was silently caught.
+                self._safe_update_chat_history()
             
             # --- Persistence of Bot Response ---
             self.repo.add_message(self.current_chat_id, "assistant", full_response)
@@ -378,10 +432,13 @@ class ChatView(ft.Container):
             import traceback
             traceback.print_exc()
             print(f"Error details: {ex}")
-            bot_message_control.content = ft.Text(f"Error: {str(ex)}", color=ColorPalette.ERROR)
-            bot_message_control.update()
+            target_control = self._streaming_bot_message_control or bot_message_control
+            target_control.content = ft.Text(f"Error: {str(ex)}", color=ColorPalette.ERROR)
+            self._safe_update_chat_history()
         
         self.is_processing = False
+        self._streaming_bot_message_control = None
+        self._streaming_response_buffer = ""
 
     def _parse_message_content(self, text):
         """
@@ -631,8 +688,5 @@ class ChatView(ft.Container):
                 vertical_alignment=ft.CrossAxisAlignment.START,
             )
         )
-        try:
-            self.chat_history.update()
-        except RuntimeError:
-            pass
+        self._safe_update_chat_history()
         return message_bubble  # Return container to allow updating content later
