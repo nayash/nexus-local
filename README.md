@@ -1,4 +1,4 @@
-# Product Requirement Document (PRD): Nexus-Local
+# Nexus-Local
 
 **Version:** 0.1.0 (Native Desktop Edition)
 **Status:** DRAFT
