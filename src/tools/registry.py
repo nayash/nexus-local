@@ -80,7 +80,19 @@ def local_search_tool(query: str, file_filter: str = None):
     # parent strategy. We use simple truncation as a safety measure instead.
     if len(context_str) > context_budget:
         context_str = context_str[:context_budget] + "\n\n... [Content truncated to fit context window] ..."
-        
+    
+    # Framing header: explicitly tell the LLM that this content was retrieved from
+    # the user's indexed files — NOT pasted by the user. This prevents the LLM from
+    # saying "The text you've provided is from..." when answering questions like
+    # "Do I have any books by X?" where the user never shared any text themselves.
+    framing_header = (
+        "The following content was automatically retrieved from the user's locally indexed files "
+        "in response to their query. The user did NOT paste or share this text directly.\n"
+        "Answer the user's original question using this retrieved content as your source.\n"
+        "─────────────────────────────────────────\n"
+    )
+    context_str = framing_header + context_str
+
     return context_str, source_metadata
 
 @tool
