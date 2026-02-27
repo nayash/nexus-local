@@ -369,7 +369,10 @@ class ChatView(ft.Container):
                 full_response += chunk
                 # Re-parse and update the entire content of the bubble
                 bot_message_control.content = self._parse_message_content(full_response)
-                bot_message_control.update()
+                # Update via parent (chat_history) instead of the bubble directly,
+                # because the bubble may not have a page reference yet if
+                # the initial chat_history.update() in add_message was silently caught.
+                self.chat_history.update()
             
             # --- Persistence of Bot Response ---
             self.repo.add_message(self.current_chat_id, "assistant", full_response)
@@ -379,7 +382,7 @@ class ChatView(ft.Container):
             traceback.print_exc()
             print(f"Error details: {ex}")
             bot_message_control.content = ft.Text(f"Error: {str(ex)}", color=ColorPalette.ERROR)
-            bot_message_control.update()
+            self.chat_history.update()
         
         self.is_processing = False
 
