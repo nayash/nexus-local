@@ -84,6 +84,7 @@ class AppLayout(ft.Row):
     def show_chat(self, e=None):
         self.active_view = self.chat_view # Ensure correct reference
         self.controls[-1] = self.chat_view
+        self.chat_view.on_show()
         self.update()
     
     def show_file_viewer(self, file_path):
