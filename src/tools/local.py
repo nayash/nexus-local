@@ -48,7 +48,7 @@ def search_local(query: str, file_filter: str = None) -> List[SearchResult]:
             # NexusIngestor.search handles the strategy logic (Naive vs Parent)
             # and returns Document objects.
             print(f"--- 🔍 SEARCHING TABLE: {table_name} ---")
-            docs = ingestor.search(query, k=result_limit, table_name=table_name)
+            docs = ingestor.search(query, k=result_limit, table_name=table_name, file_filter=file_filter)
             
             for doc in docs:
                 # Add metadata for tracking

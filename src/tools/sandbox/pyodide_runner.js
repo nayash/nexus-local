@@ -54,6 +54,20 @@ async function main() {
         process.exit(0);
     }
 
+    try {
+        await pyodide.loadPackage(["numpy", "pandas"], {
+            messageCallback: () => {},
+            errorCallback: () => {},
+        });
+    } catch (err) {
+        process.stdout.write(JSON.stringify({
+            stdout: "",
+            stderr: `Failed to load required Pyodide packages: ${err.message}`,
+            exit_code: 1
+        }));
+        process.exit(0);
+    }
+
     // Capture stdout and stderr
     let capturedStdout = "";
     let capturedStderr = "";

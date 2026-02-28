@@ -116,7 +116,7 @@ class NexusIngestor:
             
         return result
 
-    def search(self, query: str, k: int = 5, table_name: str = "documents"):
+    def search(self, query: str, k: int = 5, table_name: str = "documents", file_filter: Optional[str] = None):
         """
         Searches using the selected strategy.
         Returns a list of documents or chunks.
@@ -207,6 +207,18 @@ class NexusIngestor:
 
             # 5. Parse Query into structured format
             structured_query = query_constructor.invoke({"query": query})
+
+            # Explicit file focus is stronger than any inferred filter from the LLM.
+            # We always filter by the absolute source path when the caller provides one.
+            if file_filter:
+                from langchain_core.structured_query import Comparison, Comparator
+                abs_file_filter = os.path.abspath(file_filter)
+                structured_query.filter = Comparison(
+                    comparator=Comparator.EQ,
+                    attribute='source',
+                    value=abs_file_filter
+                )
+                print(f"--- 🎯 EXPLICIT FILE FILTER OVERRIDE: source = '{abs_file_filter}' ---")
 
             # --- FALLBACK HEURISTIC ---
             # If LLM failed to extract a filter but query looks like it has a filename

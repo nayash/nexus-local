@@ -163,7 +163,7 @@ class Organizer:
         # The Fixed Taxonomy
         categories = [
             "Finance", "LegalContracts", "IdentityPersonal", "WorkDocuments", "Correspondence",
-            "Development", "DataLogs", "TechDocs", "KeySecrets", "InstallersSoftware",
+            "Programming", "DataLogs", "Technology Documents", "KeySecrets", "InstallersSoftware",
             "Images", "AudioVideo", "CreativeAssets",
             "BooksLibrary", "Travel", "Education", "Archives", "Unsorted"
         ]

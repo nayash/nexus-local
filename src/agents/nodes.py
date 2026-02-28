@@ -114,6 +114,13 @@ SYSTEM_PROMPT = """You are Nexus, a specialized research assistant with access t
 # Module-level cache for LLM instances to avoid frequent re-initialization
 _llm_cache = {}
 
+
+def _get_last_user_message_content(messages) -> str:
+    for msg in reversed(messages):
+        if getattr(msg, "type", None) == "human":
+            return getattr(msg, "content", "") or ""
+    return ""
+
 def get_cached_llm(model_name: str, with_tools: bool = True):
     cache_key = f"{model_name}_{with_tools}"
     if cache_key not in _llm_cache:
@@ -150,12 +157,21 @@ def agent_node(state: AgentState):
     
     if focused_file:
         print(f"   🎯 FOCUS MODE ACTIVE: {focused_file}")
+        is_tabular_focus = focused_file.lower().endswith((".csv", ".tsv", ".xlsx", ".xls"))
         focus_instruction = (
             f"\n\n### 🚨 FOCUS MODE ACTIVE 🚨\n"
             f"The user is strictly focusing on the file: '{focused_file}'.\n"
-            f"You MUST strictly use the `local_search_tool` with `file_filter='{focused_file}'` for every query.\n"
-            f"If the tool returns no information (or explicitly says so), you MUST state: 'The attached document does not contain this information.'\n"
-            f"DO NOT use `web_search_tool` or general knowledge while in this mode."
+            + (
+                f"You MUST use `analyze_tabular_file_tool` with `file_path='{focused_file}'` for queries about this file.\n"
+                f"Pass the user's full request as `user_query`.\n"
+                f"Do NOT use `local_search_tool` or `execute_python_code` for this tabular file.\n"
+                if is_tabular_focus
+                else f"You MUST strictly use the `local_search_tool` with `file_filter='{focused_file}'` for every query.\n"
+            )
+            + (
+                f"If the tool returns no information (or explicitly says so), you MUST state: 'The attached document does not contain this information.'\n"
+                f"DO NOT use `web_search_tool` or general knowledge while in this mode."
+            )
         )
         # Modify the System Message (first message)
         if isinstance(messages[0], SystemMessage):
@@ -171,15 +187,13 @@ def agent_node(state: AgentState):
     # Fix LLM truncating query to just filenames (e.g., query="GAN.pdf" vs. "Summarize GAN.pdf")
     # This ensures the search engine gets the FULL intent for metadata filtering & semantic search.
     if response.tool_calls:
+        last_user_content = _get_last_user_message_content(messages)
+
         for tool_call in response.tool_calls:
             if tool_call["name"] == "local_search_tool":
                 args = tool_call.get("args", {})
                 query = args.get("query", "")
-                
-                # Get last user message
-                last_msg = messages[-1]
-                last_user_content = last_msg.content if hasattr(last_msg, "content") else ""
-                
+
                 # Heuristic: 
                 # 1. Query looks like a filename (ends in extension)
                 # 2. OR Query is significantly shorter than user message (loss of context)
@@ -198,6 +212,21 @@ def agent_node(state: AgentState):
                          # If it's an object (depending on version), might need different handling
                          # But typically response.tool_calls is a list of ToolCall dicts
                          tool_call["args"]["query"] = last_user_content
+
+        if focused_file and focused_file.lower().endswith((".csv", ".tsv", ".xlsx", ".xls")):
+            for tool_call in response.tool_calls:
+                if tool_call["name"] in {"local_search_tool", "execute_python_code"}:
+                    print(f"   🔀 REWRITING TOOL CALL: {tool_call['name']} -> analyze_tabular_file_tool")
+                    replacement_args = {
+                        "file_path": focused_file,
+                        "user_query": last_user_content,
+                    }
+                    if isinstance(tool_call, dict):
+                        tool_call["name"] = "analyze_tabular_file_tool"
+                        tool_call["args"] = replacement_args
+                    else:
+                        tool_call["name"] = "analyze_tabular_file_tool"
+                        tool_call["args"] = replacement_args
 
     # --- 🛡️ RESCUE LOGIC: Fix "Chatty" Tool Calls ---
     # If the model didn't trigger a native tool call, check if it wrote JSON in the text.

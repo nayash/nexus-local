@@ -5,6 +5,7 @@ flet[all]==0.80.4
 requests
 python-dotenv
 pydantic
+numpy
 pandas
 
 # Vector Database & PDF
