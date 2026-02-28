@@ -26,6 +26,7 @@ class ChatView(ft.Container):
         self.padding = 0  # Padding handling inside
         self.content = self.build_content()
         self.is_processing = False
+        self._processing_chat_id = None
         self._streaming_bot_message_control = None
         self._streaming_response_buffer = ""
 
@@ -147,24 +148,16 @@ class ChatView(ft.Container):
 
     def load_chat(self, chat_id):
         self.current_chat_id = chat_id
-        self.chat_history.controls.clear()
         
         try:
             chat = self.repo.get_chat(chat_id)
             focused_file = chat.get("focused_file") if chat else None
             self.app_page.data["focused_file"] = focused_file
             self.update_focus_ui(focused_file)
-
-            messages = self.repo.get_chat_history(chat_id)
-            if not messages:
-                self.add_message("Start of conversation.", is_user=False)
-            
-            for msg in messages:
-                self.add_message(msg["content"], is_user=(msg["role"] == "user"))
         except Exception as e:
             NotificationManager.error(f"Failed to load chat: {e}")
-            
-        self._safe_update_chat_history()
+
+        self._render_chat_history(chat_id)
 
     def on_show(self):
         """
@@ -172,30 +165,34 @@ class ChatView(ft.Container):
         Re-sync with DB after background completion if needed.
         """
         if self.current_chat_id:
-            # Always rehydrate chat from DB when returning to this view.
-            self._refresh_current_chat_from_db()
-
-        if self.is_processing:
-            # Recreate the live processing bubble on the visible view and point
-            # stream updates at this new control.
-            thinking_text = self._streaming_response_buffer if self._streaming_response_buffer else "Thinking..."
-            self._streaming_bot_message_control = self.add_message(thinking_text, is_user=False)
-            self._safe_update_chat_history()
+            self._render_chat_history(self.current_chat_id)
 
     def _refresh_current_chat_from_db(self):
         """Reload current chat messages without changing focused-file state."""
         if not self.current_chat_id:
             return
 
+        self._render_chat_history(self.current_chat_id)
+
+    def _render_chat_history(self, chat_id: str):
+        """Render a chat from DB and append the in-flight placeholder when relevant."""
         self.chat_history.controls.clear()
+
         try:
-            messages = self.repo.get_chat_history(self.current_chat_id)
+            messages = self.repo.get_chat_history(chat_id)
             if not messages:
                 self.add_message("Start of conversation.", is_user=False)
             for msg in messages:
                 self.add_message(msg["content"], is_user=(msg["role"] == "user"))
+
+            if self.is_processing and self._processing_chat_id == chat_id:
+                thinking_text = self._streaming_response_buffer or "Thinking..."
+                self._streaming_bot_message_control = self.add_message(thinking_text, is_user=False)
+            else:
+                self._streaming_bot_message_control = None
         except Exception as e:
             NotificationManager.error(f"Failed to refresh chat: {e}")
+
         self._safe_update_chat_history()
 
     def _safe_update_chat_history(self):
@@ -406,6 +403,9 @@ class ChatView(ft.Container):
             print(f">>> NO - Skipping renaming (not a new chat)")
         # --- Persistence End ---
 
+        origin_chat_id = self.current_chat_id
+        self._processing_chat_id = origin_chat_id
+
         # 1. Show User Message
         self.add_message(query, is_user=True)
         
@@ -424,32 +424,36 @@ class ChatView(ft.Container):
             }
             
             # Fetch limited history for context (Sliding Window: last 20 messages)
-            history = self.repo.get_chat_history(self.current_chat_id, limit=20)
+            history = self.repo.get_chat_history(origin_chat_id, limit=20)
             # Pass history[:-1] because the current 'query' is already the last item in history
             # and run_agent_stream appends 'query' to the history it receives.
             async for chunk in run_agent_stream(query, history[:-1], context):
                 full_response += chunk
                 self._streaming_response_buffer = full_response
-                # Re-parse and update the entire content of the bubble
-                target_control = self._streaming_bot_message_control or bot_message_control
-                target_control.content = self._parse_message_content(full_response)
-                # Update via parent (chat_history) instead of the bubble directly,
-                # because the bubble may not have a page reference yet if
-                # the initial chat_history.update() in add_message was silently caught.
-                self._safe_update_chat_history()
+                if self.current_chat_id == origin_chat_id:
+                    # Re-parse and update the entire content of the bubble only
+                    # when the originating chat is currently visible.
+                    target_control = self._streaming_bot_message_control or bot_message_control
+                    target_control.content = self._parse_message_content(full_response)
+                    # Update via parent (chat_history) instead of the bubble directly,
+                    # because the bubble may not have a page reference yet if
+                    # the initial chat_history.update() in add_message was silently caught.
+                    self._safe_update_chat_history()
             
             # --- Persistence of Bot Response ---
-            self.repo.add_message(self.current_chat_id, "assistant", full_response)
+            self.repo.add_message(origin_chat_id, "assistant", full_response)
                 
         except Exception as ex:
             import traceback
             traceback.print_exc()
             print(f"Error details: {ex}")
-            target_control = self._streaming_bot_message_control or bot_message_control
-            target_control.content = ft.Text(f"Error: {str(ex)}", color=ColorPalette.ERROR)
-            self._safe_update_chat_history()
+            if self.current_chat_id == origin_chat_id:
+                target_control = self._streaming_bot_message_control or bot_message_control
+                target_control.content = ft.Text(f"Error: {str(ex)}", color=ColorPalette.ERROR)
+                self._safe_update_chat_history()
         
         self.is_processing = False
+        self._processing_chat_id = None
         self._streaming_bot_message_control = None
         self._streaming_response_buffer = ""
 
