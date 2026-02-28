@@ -28,6 +28,8 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
     """
     if context is None:
         context = {}
+    context.setdefault("sources", [])
+    context.setdefault("visual_artifacts", [])
         
     # 1. Initialize Graph (Cached)
     graph = get_graph()
@@ -132,13 +134,27 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
                 _, metadata = output
             
             if metadata:
-                if "sources" not in context:
-                    context["sources"] = []
                 for item in metadata:
-                    if item not in context["sources"]:
-                        context["sources"].append(item)
+                    if not isinstance(item, dict):
+                        continue
+
+                    item_type = item.get("type")
+                    if item_type == "plot":
+                        if item not in context["visual_artifacts"]:
+                            context["visual_artifacts"].append(item)
+                    else:
+                        if item not in context["sources"]:
+                            context["sources"].append(item)
                             
-    # Final step: append source citations
+    # Final step: append visual artifacts and source citations
+    if context.get("visual_artifacts"):
+        yield "\n\n"
+        for item in context["visual_artifacts"]:
+            mime = item.get("mime", "image/png")
+            image_base64 = item.get("image_base64", "")
+            if image_base64:
+                yield f"<nexus-plot mime=\"{mime}\">{image_base64}</nexus-plot>\n"
+
     if context.get("sources"):
         from urllib.parse import quote
         yield "\n\n### Sources\n"

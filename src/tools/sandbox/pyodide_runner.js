@@ -55,7 +55,7 @@ async function main() {
     }
 
     try {
-        await pyodide.loadPackage(["numpy", "pandas"], {
+        await pyodide.loadPackage(["numpy", "pandas", "matplotlib"], {
             messageCallback: () => {},
             errorCallback: () => {},
         });

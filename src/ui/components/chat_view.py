@@ -1,5 +1,6 @@
 import asyncio
 import os
+import base64
 import flet as ft
 from styles import ColorPalette, TextStyles
 from src.core.config import Config
@@ -465,7 +466,63 @@ class ChatView(ft.Container):
         Updated for Streaming: Handles open <think> tags gracefully.
         """
         import re
-        
+
+        def append_rich_content(target_controls, chunk_text):
+            plot_pattern = re.compile(r'<nexus-plot(?: mime="([^"]+)")?>(.*?)</nexus-plot>', re.DOTALL)
+            open_plot_pattern = re.compile(r'<nexus-plot(?: mime="[^"]*")?>', re.DOTALL)
+            cursor = 0
+
+            def append_markdown(markdown_text):
+                markdown_text = markdown_text.strip()
+                if not markdown_text:
+                    return
+
+                target_controls.append(
+                    ft.Markdown(
+                        markdown_text,
+                        selectable=True,
+                        extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                        on_tap_link=self.handle_link_click,
+                    )
+                )
+
+            for match in plot_pattern.finditer(chunk_text):
+                append_markdown(chunk_text[cursor:match.start()])
+
+                mime_type = match.group(1) or "image/png"
+                image_b64 = (match.group(2) or "").strip()
+                if mime_type == "image/png" and image_b64:
+                    try:
+                        target_controls.append(
+                            ft.Container(
+                                content=ft.Image(
+                                    src=base64.b64decode(image_b64),
+                                    fit=ft.BoxFit.CONTAIN,
+                                    border_radius=10,
+                                    width=560,
+                                ),
+                                margin=ft.margin.only(top=5, bottom=5),
+                            )
+                        )
+                    except Exception as image_error:
+                        print(f"Error rendering nexus plot: {image_error}")
+                        target_controls.append(
+                            ft.Text(
+                                "[Plot image could not be rendered.]",
+                                color=ColorPalette.TEXT_SECONDARY,
+                                italic=True,
+                            )
+                        )
+
+                cursor = match.end()
+
+            trailing_part = chunk_text[cursor:]
+            open_plot_match = open_plot_pattern.search(trailing_part)
+            if open_plot_match:
+                append_markdown(trailing_part[:open_plot_match.start()])
+            else:
+                append_markdown(trailing_part)
+
         controls = []
         
         try:
@@ -495,14 +552,7 @@ class ChatView(ft.Container):
                 # A. Content BEFORE the think block
                 pre_text = text[:start_match.start()].strip()
                 if pre_text:
-                    controls.append(
-                        ft.Markdown(
-                            pre_text,
-                            selectable=True,
-                            extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-                            on_tap_link=self.handle_link_click,
-                        )
-                    )
+                    append_rich_content(controls, pre_text)
                 
                 # B. The Think Block
                 # Check if it is closed
@@ -541,14 +591,7 @@ class ChatView(ft.Container):
                     
                     # C. Content AFTER the think block
                     if post_text:
-                         controls.append(
-                            ft.Markdown(
-                                post_text,
-                                selectable=True,
-                                extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-                                on_tap_link=self.handle_link_click,
-                            )
-                        )
+                         append_rich_content(controls, post_text)
                 else:
                     # Open thought (Streaming in progress)
                     thought_text = remainder.strip()
@@ -579,14 +622,7 @@ class ChatView(ft.Container):
             
             else:
                 # No think block, just regular markdown
-                controls.append(
-                    ft.Markdown(
-                        text,
-                        selectable=True,
-                        extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-                        on_tap_link=self.handle_link_click,
-                    )
-                )
+                append_rich_content(controls, text)
         except Exception as e:
             print(f"Error parsing message content: {e}")
             # Fallback to simple Text control

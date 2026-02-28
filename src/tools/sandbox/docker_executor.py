@@ -40,32 +40,51 @@ class DockerSandboxExecutor(BaseSandboxExecutor):
 
         client = docker.from_env()
 
+        def build_image() -> None:
+            from src.core.config import Config
+
+            dockerfile_path = os.path.join(Config.PROJECT_ROOT, "Dockerfile.sandbox")
+            if not os.path.isfile(dockerfile_path):
+                raise FileNotFoundError(
+                    f"Dockerfile.sandbox not found at {dockerfile_path}. "
+                    "Please create it or switch to CODE_SANDBOX_ENGINE=pyodide."
+                )
+
+            logger.info(f"🔨 Building sandbox image '{self._image}' …")
+            client.images.build(
+                path=Config.PROJECT_ROOT,
+                dockerfile="Dockerfile.sandbox",
+                tag=self._image,
+                rm=True,
+            )
+            logger.info(f"✅ Sandbox image '{self._image}' built successfully.")
+
         # Check if image already exists
         try:
             client.images.get(self._image)
             logger.info(f"✅ Sandbox image '{self._image}' found.")
-            return
+            try:
+                client.containers.run(
+                    image=self._image,
+                    command=["python3", "-c", "import numpy, pandas, sympy, matplotlib"],
+                    network_mode="none",
+                    read_only=True,
+                    mem_limit=self._mem_limit,
+                    cpu_count=1,
+                    cap_drop=["ALL"],
+                    user="sandbox",
+                    tmpfs={"/tmp": "size=1m,noexec,nosuid"},
+                    remove=True,
+                    stdout=True,
+                    stderr=True,
+                )
+                return
+            except docker.errors.ContainerError:
+                logger.info(f"🔄 Sandbox image '{self._image}' is missing required packages. Rebuilding.")
+                build_image()
+                return
         except docker.errors.ImageNotFound:
-            pass
-
-        # Build from Dockerfile.sandbox at project root
-        from src.core.config import Config
-
-        dockerfile_path = os.path.join(Config.PROJECT_ROOT, "Dockerfile.sandbox")
-        if not os.path.isfile(dockerfile_path):
-            raise FileNotFoundError(
-                f"Dockerfile.sandbox not found at {dockerfile_path}. "
-                "Please create it or switch to CODE_SANDBOX_ENGINE=pyodide."
-            )
-
-        logger.info(f"🔨 Building sandbox image '{self._image}' …")
-        client.images.build(
-            path=Config.PROJECT_ROOT,
-            dockerfile="Dockerfile.sandbox",
-            tag=self._image,
-            rm=True,
-        )
-        logger.info(f"✅ Sandbox image '{self._image}' built successfully.")
+            build_image()
 
     # ------------------------------------------------------------------
     # Execution
