@@ -19,9 +19,16 @@ def init_db():
         CREATE TABLE IF NOT EXISTS chats (
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
+            focused_file TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # Backward-compatible migration for existing DBs created before focused_file existed.
+    cursor.execute("PRAGMA table_info(chats)")
+    chat_columns = [row[1] for row in cursor.fetchall()]
+    if "focused_file" not in chat_columns:
+        cursor.execute("ALTER TABLE chats ADD COLUMN focused_file TEXT")
     
     # Messages Table
     cursor.execute('''
@@ -59,14 +66,14 @@ class ChatRepository:
     def _get_conn(self):
         return sqlite3.connect(self.db_path)
 
-    def create_chat(self, title: str = "New Chat") -> str:
+    def create_chat(self, title: str = "New Chat", focused_file: Optional[str] = None) -> str:
         """Creates a new chat session and returns its ID."""
         chat_id = str(uuid.uuid4())
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO chats (id, title, created_at) VALUES (?, ?, ?)",
-            (chat_id, title, datetime.datetime.now())
+            "INSERT INTO chats (id, title, focused_file, created_at) VALUES (?, ?, ?, ?)",
+            (chat_id, title, focused_file, datetime.datetime.now())
         )
         conn.commit()
         conn.close()
@@ -82,6 +89,30 @@ class ChatRepository:
         )
         conn.commit()
         conn.close()
+
+    def update_chat_focused_file(self, chat_id: str, focused_file: Optional[str]):
+        """Updates the focused file associated with a chat."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE chats SET focused_file = ? WHERE id = ?",
+            (focused_file, chat_id)
+        )
+        conn.commit()
+        conn.close()
+
+    def get_chat(self, chat_id: str) -> Optional[Dict]:
+        """Retrieves core chat metadata for a specific chat."""
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, title, focused_file, created_at FROM chats WHERE id = ?",
+            (chat_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
 
     def add_message(self, chat_id: str, role: str, content: str):
         """Adds a message to a chat."""

@@ -146,11 +146,15 @@ class ChatView(ft.Container):
         self._safe_update_chat_history()
 
     def load_chat(self, chat_id):
-        self.clear_focus(None) # Clear any existing file focus
         self.current_chat_id = chat_id
         self.chat_history.controls.clear()
         
         try:
+            chat = self.repo.get_chat(chat_id)
+            focused_file = chat.get("focused_file") if chat else None
+            self.app_page.data["focused_file"] = focused_file
+            self.update_focus_ui(focused_file)
+
             messages = self.repo.get_chat_history(chat_id)
             if not messages:
                 self.add_message("Start of conversation.", is_user=False)
@@ -290,6 +294,8 @@ class ChatView(ft.Container):
                 if self._is_file_already_indexed(file_path):
                     print(f"File already indexed, skipping ingestion: {file_path}")
                     self.app_page.data["focused_file"] = file_path
+                    if self.current_chat_id:
+                        self.repo.update_chat_focused_file(self.current_chat_id, file_path)
                     self.update_focus_ui(file_path)
                     NotificationManager.success(f"Focused on {files[0].name}.")
                     return
@@ -303,6 +309,8 @@ class ChatView(ft.Container):
                 
                 if success:
                     self.app_page.data["focused_file"] = file_path
+                    if self.current_chat_id:
+                        self.repo.update_chat_focused_file(self.current_chat_id, file_path)
                     self.update_focus_ui(file_path)
                     NotificationManager.success("Focused! Agent will only search this file.")
                 else:
@@ -313,6 +321,8 @@ class ChatView(ft.Container):
 
     def clear_focus(self, e):
         self.app_page.data["focused_file"] = None
+        if self.current_chat_id:
+            self.repo.update_chat_focused_file(self.current_chat_id, None)
         self.update_focus_ui(None)
         # NotificationManager.info("Focus cleared. Searching all knowledge.")
 
@@ -361,7 +371,10 @@ class ChatView(ft.Container):
         is_new_chat = False
         if not self.current_chat_id:
             print(">>> Creating new chat session...")
-            self.current_chat_id = self.repo.create_chat(title="New Chat")
+            self.current_chat_id = self.repo.create_chat(
+                title="New Chat",
+                focused_file=self.app_page.data.get("focused_file")
+            )
             is_new_chat = True
             print(f">>> New chat created with ID: {self.current_chat_id}")
             print(f">>> is_new_chat: {is_new_chat}")
