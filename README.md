@@ -202,6 +202,36 @@ CUDAExecutionProvider
 
 If it does not, multimodal embeddings will disable themselves and Nexus will fall back to the existing text-only embedding path.
 
+#### Configure the local GPU runtime (Linux)
+
+If `CUDAExecutionProvider` is visible but session creation still fails with errors like `libcudnn.so.9: cannot open shared object file`, configure the linker path once from the repo root:
+
+```bash
+bash scripts/setup.sh gpu-runtime
+```
+
+This will locate `libcudnn.so.9`, add its directory to the system linker config, and run `ldconfig` so you do not need to export `LD_LIBRARY_PATH` manually on every shell.
+
+If you know the exact cuDNN library directory, you can provide it explicitly:
+
+```bash
+bash scripts/setup.sh gpu-runtime --cudnn-dir /usr/local/lib/ollama/mlx_cuda_v13
+```
+
+#### Verify the full GPU stack
+
+After the runtime setup, verify that the app can actually bind the multimodal embedder to CUDA:
+
+```bash
+bash scripts/setup.sh check-gpu
+```
+
+This checks:
+- `nvidia-smi`
+- `libcudnn.so.9` visibility in `ldconfig`
+- ONNX Runtime provider availability
+- whether the project's multimodal embedder is using `CUDAExecutionProvider` or CPU fallback
+
 #### Create the local model directory
 
 From the repo root:
