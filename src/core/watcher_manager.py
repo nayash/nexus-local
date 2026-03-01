@@ -1,11 +1,9 @@
 import os
-import shutil
-import uuid
-from typing import List, Dict, Tuple
+from typing import Tuple
 from src.core.database import WatchedPathsRepository
 from src.core.services.watcher import WatcherService
-from src.rag.ingestion import ingest_path, NexusIngestor
-from src.rag.storage import get_db_connection, get_table, get_source_field_for_table
+from src.rag.ingestion import ingest_path
+from src.rag.ingestion_multimodal import purge_multimodal_prefix
 
 class WatcherManager:
     """
@@ -34,52 +32,15 @@ class WatcherManager:
                  # For now, let's say "Already watched".
                  return False, "Path is already being watched."
 
-        # 2. PURGE: Remove legacy records from generic tables
-        # We need to find where this path might have been ingested before.
-        # Usually 'documents' is the default.
-        # Also check other tables? 
-        # Ideally we only purge from 'documents' for now as that's the naive default.
-        
-        print(f"--- 🧹 PURGING legacy records for: {path} ---")
+        # 2. PURGE: Remove existing multimodal records for this path prefix.
+        print(f"--- 🧹 PURGING multimodal records for: {path} ---")
         try:
-            # We assume the default table is 'documents' and maybe 'nexus_parent_child'
-            # We should clear from both to be safe? 
-            # Or just 'documents' if that was the old default.
-            # Let's try to purge from 'documents' (naive) and 'nexus_parent_child' (parent)
-            
-            tables_to_check = ["documents", "nexus_parent_child"]
-            for tbl_name in tables_to_check:
-                tbl = get_table(tbl_name)
-                if tbl:
-                    # Determine correct field for source path
-                    source_field = get_source_field_for_table(tbl)
-                    
-                    # LanceDB delete syntax: "source LIKE 'path%'" matches directory
-                    # Note: source is absolute path.
-                    # We want to delete everything starting with this path.
-                    # SQL style: source LIKE '/abs/path/%'
-                    escape_path = path.replace("'", "''") 
-                    # Add trailing slash to avoid partial matches (e.g. /foo matching /foobar)
-                    # But also match the folder itself if it was ingested as a file?? (Not possible for strict dir)
-                    # For a directory ingest, all files inside have source starting with path.
-                    
-                    # Construct filter
-                    # LanceDB SQL filter support is limited, but string matching works.
-                    # "source LIKE '...%'"
-                    
-                    filter_query = f"{source_field} LIKE '{escape_path}%'"
-
-                    count = tbl.count_rows(filter_query)
-                    tbl.delete(filter_query)
-                    print(f"Purged {count} records from '{tbl_name}' matching '{path}' in field '{source_field}'")
-
-
+            purge_multimodal_prefix(path)
         except Exception as e:
             print(f"Warning: Purge step encountered error (non-fatal): {e}")
 
-        # 3. CREATE: Generate dedicated table name
-        safe_name = "watched_" + os.path.basename(path).strip().replace(" ", "_").lower()
-        safe_name = f"{safe_name}_{uuid.uuid4().hex[:8]}"
+        # 3. RECORD: Keep a stable scope name in SQLite for future workspace support.
+        safe_name = "watch:" + os.path.basename(path).strip().replace(" ", "_").lower()
 
         # 4. RECORD: Save to DB (Must be before organization for repo lookups)
         try:
@@ -94,8 +55,7 @@ class WatcherManager:
             self._organize_existing_files(path, safe_name)
             
             # Then perform full ingestion for the remaining structure (subfolders etc)
-            ingestor = NexusIngestor(strategy="parent")
-            ingestor.ingest_directory(path, recursive=True, table_name=safe_name)
+            ingest_path(path, strategy="multimodal")
             
         except Exception as e:
             # Rollback DB if possible? For now just log and continue

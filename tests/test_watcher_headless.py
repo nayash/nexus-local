@@ -41,13 +41,10 @@ class TestWatcherHeadless(unittest.TestCase):
                 repo.remove_watched_path(p['id'])
 
     @patch('src.core.organizer.ChatOllama')
-    @patch('src.core.watcher_manager.NexusIngestor') # Mock ingestion
-    def test_watcher_lifecycle(self, mock_ingestor_cls, mock_llm_cls):
+    @patch('src.core.watcher_manager.ingest_path') # Mock ingestion
+    def test_watcher_lifecycle(self, mock_ingest_path, mock_llm_cls):
         print("\n--- Testing Watcher Implementation ---")
-        
-        # Mock ingestion
-        mock_ingestor_instance = MagicMock()
-        mock_ingestor_cls.return_value = mock_ingestor_instance
+        mock_ingest_path.return_value = (True, "ok", None)
         
         watcher_service = WatcherService()
         

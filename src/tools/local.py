@@ -1,16 +1,8 @@
-from langchain_ollama import OllamaEmbeddings
 from src.core.config import Config
-from src.rag.storage import get_table, list_tables
 from src.tools.schemas import SearchResult
-from src.rag.ingestion import NexusIngestor
+from src.rag.ingestion_multimodal import search_multimodal
 from typing import List
 import os
-
-# Initialize embeddings_model (keep global if needed elsewhere, but we'll use Ingestor)
-embeddings_model = OllamaEmbeddings(
-    model="nomic-embed-text",
-    base_url=Config.OLLAMA_BASE_URL
-)
 
 def search_local(query: str, file_filter: str = None) -> List[SearchResult]:
     """
@@ -25,56 +17,61 @@ def search_local(query: str, file_filter: str = None) -> List[SearchResult]:
         print(f"⚠️ WARNING: Intent to focus on '{file_filter}' ignored because file does not exist.")
         file_filter = None
 
-    tables_to_search = []
-    if file_filter:
-         tables_to_search = ["documents"]
-    else:
-         tables_to_search = list_tables()
-         
-    if not tables_to_search:
+    if not Config.MULTIMODAL_EMBEDDINGS_ENABLED:
         return [SearchResult(title="System", url="local", content="No local knowledge found. Please ingest files or folders first.")]
 
-    # Initialize Ingestor (Strategy should ideally be loaded from config, but we default to parent)
-    # Using 'parent' strategy allows it to handle both parent-child and fallback to naive if needed
-    ingestor = NexusIngestor(strategy="parent")
-    
-    all_results = []
-    
-    for table_name in tables_to_search:
-        # result_limit=20 for focused, 10 for global
-        result_limit = 20 if file_filter else 10
-        
-        try:
-            # NexusIngestor.search handles the strategy logic (Naive vs Parent)
-            # and returns Document objects.
-            print(f"--- 🔍 SEARCHING TABLE: {table_name} ---")
-            docs = ingestor.search(query, k=result_limit, table_name=table_name, file_filter=file_filter)
-            
-            for doc in docs:
-                # Add metadata for tracking
-                metadata = doc.metadata or {}
-                source = metadata.get("source", "Unknown Source")
-                
-                # Apply file filter if set (though ideally search() should handle it)
-                if file_filter and os.path.abspath(source) != os.path.abspath(file_filter):
-                    continue
-                
-                all_results.append(
-                    SearchResult(
-                        title=f'Local File ({table_name}): {os.path.basename(source)}',
-                        url=source,
-                        content=doc.page_content,
-                        source="local"
-                    )
-                )
-                print(f'added search result: {all_results[-1]}')
-        except Exception as e:
-            print(f"Error searching table {table_name}: {e}")
+    try:
+        top_k = 10 if not file_filter else 20
+        multimodal_results = _search_multimodal_results(query, file_filter=file_filter, top_k=top_k)
+    except Exception as exc:
+        print(f"⚠️ Multimodal search failed: {exc}")
+        multimodal_results = []
 
-    if not all_results:
+    if not multimodal_results:
         msg = "No relevant local documents found."
         if file_filter:
             msg = f"The focused document '{os.path.basename(file_filter)}' does not seem to contain information regarding your query."
         return [SearchResult(title="Info", url="", content=msg)]
-        
-    return all_results
+
+    return multimodal_results
+
+
+def _search_multimodal_results(query: str, file_filter: str = None, top_k: int = 10) -> List[SearchResult]:
+    rows = search_multimodal(query, top_k=top_k, file_filter=file_filter)
+    if not rows:
+        return []
+
+    results = []
+    for row in rows:
+        source_path = row.get("source_path") or ""
+        if file_filter and os.path.abspath(source_path) != os.path.abspath(file_filter):
+            continue
+
+        modality = row.get("modality", "text")
+        source_type = row.get("source_type", "local")
+        base_name = os.path.basename(source_path) or "Unknown"
+
+        if modality == "image":
+            extra = row.get("extra") or "{}"
+            placeholder = (
+                f"[IMAGE] file={source_path} "
+                f"page={row.get('page')} image_index={row.get('image_index')} "
+                f"mime={row.get('mime')} size={row.get('width')}x{row.get('height')} "
+                f"cached={extra}"
+            )
+            content = placeholder
+            title = f"Local Image ({source_type}): {base_name}"
+        else:
+            content = row.get("text") or ""
+            title = f"Local File ({source_type}): {base_name}"
+
+        results.append(
+            SearchResult(
+                title=title,
+                url=source_path,
+                content=content,
+                source="local",
+            )
+        )
+
+    return results

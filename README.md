@@ -143,3 +143,166 @@ source .flet-venv/bin/activate
 
 echo "starting Flet application"
 PYTHONPATH=. flet run --recursive src/ui/main.py
+
+---
+
+## 6. Setup
+
+### 6.1 Base App Setup
+
+1. Create and activate the project virtual environment.
+2. Install the base dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+3. Start the app:
+
+```bash
+PYTHONPATH=. flet run --recursive src/ui/main.py
+```
+
+### 6.2 Multimodal Local RAG Setup (ONNX + LanceDB)
+
+Nexus supports additive multimodal ingestion and retrieval for:
+- PDF (text + extracted images)
+- DOCX
+- TXT / MD
+- CSV
+- PNG / JPEG
+- HTML / HTM
+
+This feature uses:
+- `onnxruntime-gpu` for GPU inference
+- a CLIP-style ONNX model for text and image embeddings
+- LanceDB for mixed text/image vector storage
+
+#### Install the required packages
+
+If you already installed from `requirements.txt`, the packages are included there. To install explicitly:
+
+```bash
+pip install onnxruntime-gpu transformers tokenizers pillow pymupdf python-docx beautifulsoup4
+```
+
+#### Verify ONNX Runtime GPU is available
+
+Run:
+
+```bash
+python -c "import onnxruntime as ort; print(ort.get_available_providers())"
+```
+
+Expected output should include:
+
+```text
+CUDAExecutionProvider
+```
+
+If it does not, multimodal embeddings will disable themselves and Nexus will fall back to the existing text-only embedding path.
+
+#### Create the local model directory
+
+From the repo root:
+
+```bash
+mkdir -p models/clip_onnx
+```
+
+#### Download the ONNX model files
+
+Use the Hugging Face ONNX export for CLIP:
+- Model repo: `https://huggingface.co/Xenova/clip-vit-base-patch32`
+- ONNX files: `https://huggingface.co/Xenova/clip-vit-base-patch32/tree/main/onnx`
+
+Download these exact files:
+
+```bash
+curl -L https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/text_model.onnx -o models/clip_onnx/text_model.onnx
+curl -L https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/vision_model.onnx -o models/clip_onnx/vision_model.onnx
+```
+
+#### Download the tokenizer files
+
+Use the tokenizer files from the original CLIP model repo:
+- Model repo: `https://huggingface.co/openai/clip-vit-base-patch32`
+
+Download these exact files:
+
+```bash
+curl -L https://huggingface.co/openai/clip-vit-base-patch32/resolve/main/tokenizer.json -o models/clip_onnx/tokenizer.json
+curl -L https://huggingface.co/openai/clip-vit-base-patch32/resolve/main/tokenizer_config.json -o models/clip_onnx/tokenizer_config.json
+curl -L https://huggingface.co/openai/clip-vit-base-patch32/resolve/main/special_tokens_map.json -o models/clip_onnx/special_tokens_map.json
+curl -L https://huggingface.co/openai/clip-vit-base-patch32/resolve/main/vocab.json -o models/clip_onnx/vocab.json
+curl -L https://huggingface.co/openai/clip-vit-base-patch32/resolve/main/merges.txt -o models/clip_onnx/merges.txt
+```
+
+After this, your folder should look like:
+
+```text
+models/clip_onnx/
+  text_model.onnx
+  vision_model.onnx
+  tokenizer.json
+  tokenizer_config.json
+  special_tokens_map.json
+  vocab.json
+  merges.txt
+```
+
+#### Environment configuration
+
+These settings are already loaded automatically from `.env` by `src/core/config.py`. You do not need to export them manually every time.
+
+Current multimodal defaults:
+
+```env
+MULTIMODAL_EMBEDDINGS_ENABLED=true
+MULTIMODAL_EMBED_MODEL_DIR=/home/asutosh/Documents/projects/ml_projects/nexus-local/models/clip_onnx
+EMBEDDING_DEVICE=cuda
+ORT_PROVIDER=CUDAExecutionProvider
+```
+
+#### Verify the embedder loads
+
+Run:
+
+```bash
+python -c "from src.embeddings.multimodal_onnx import get_multimodal_embedder; e = get_multimodal_embedder(force_refresh=True); print(type(e).__name__ if e else 'FAILED')"
+```
+
+Expected result:
+
+```text
+MultimodalOnnxEmbedder
+```
+
+If it prints `FAILED`, check:
+- `CUDAExecutionProvider` is available
+- the ONNX files exist in `models/clip_onnx`
+- the tokenizer files exist in `models/clip_onnx`
+- the files were downloaded correctly
+
+#### Optional helper script
+
+You can also use:
+
+```bash
+python scripts/download_clip_onnx.py <base-url>
+```
+
+This downloads expected model files into the configured local model directory. It does not choose a source automatically; you must provide the base URL.
+
+#### Multimodal ingestion test
+
+To test with a sample folder containing mixed file types:
+
+```bash
+python scripts/test_multimodal_ingestion.py <sample-folder>
+```
+
+This will:
+- ingest supported files into the multimodal LanceDB table
+- run a few test queries
+- print the top results with modality and citation metadata

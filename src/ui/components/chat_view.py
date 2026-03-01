@@ -266,18 +266,12 @@ class ChatView(ft.Container):
         except Exception as e:
             print(f"Error generating title: {e}")
     
-    def _is_file_already_indexed(self, file_path: str, table_name: str = "documents") -> bool:
-        """Check if this file path already has entries in the vector DB, to avoid re-ingestion."""
+    def _is_file_already_indexed(self, file_path: str) -> bool:
+        """Check if this file path is already present in the multimodal registry."""
         try:
-            from src.rag.storage import get_table, get_source_field_for_table
-            abs_path = os.path.abspath(file_path)
-            tbl = get_table(table_name)
-            if tbl is None:
-                return False
-            source_field = get_source_field_for_table(tbl)
-            # Query for at least one row with this source path
-            results = tbl.search().where(f"{source_field} = '{abs_path}'", prefilter=True).limit(1).to_list()
-            return len(results) > 0
+            from src.rag.ingestion_multimodal import is_source_indexed_multimodal
+
+            return is_source_indexed_multimodal(file_path)
         except Exception as ex:
             print(f"Error checking if file indexed: {ex}")
             return False  # On error, assume not indexed so we ingest safely
@@ -303,7 +297,7 @@ class ChatView(ft.Container):
                 # Ingest quietly
                 from src.rag.ingestion import ingest_file
                 
-                success, msg, _ = ingest_file(file_path, table_name="documents")
+                success, msg, _ = ingest_file(file_path, strategy="multimodal")
                 
                 if success:
                     self.app_page.data["focused_file"] = file_path

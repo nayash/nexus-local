@@ -3,6 +3,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _env_flag(name: str, default: str = "false") -> bool:
+    value = os.getenv(name, default)
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
 class Config:
     # Resolve Project Root (2 levels up from src/core/config.py -> src/core -> src -> root)
     # Actually config.py is in src/core, so:
@@ -32,3 +37,27 @@ class Config:
     DOCKER_TIMEOUT: int = 30
     DOCKER_MEM_LIMIT: str = "256m"
     PYODIDE_TIMEOUT: int = 30
+
+    # Multimodal embeddings / RAG
+    MULTIMODAL_EMBEDDINGS_ENABLED: bool = _env_flag("MULTIMODAL_EMBEDDINGS_ENABLED", "true")
+    MULTIMODAL_MODEL_DIR: str = os.getenv(
+        "MULTIMODAL_EMBED_MODEL_DIR",
+        os.path.join(PROJECT_ROOT, "models", "clip_onnx"),
+    )
+    MULTIMODAL_PARENT_TABLE: str = os.getenv("MULTIMODAL_PARENT_TABLE", "nexus_parents")
+    MULTIMODAL_TEXT_CHILD_TABLE: str = os.getenv(
+        "MULTIMODAL_TEXT_CHILD_TABLE",
+        "nexus_child_text_nomic",
+    )
+    MULTIMODAL_CLIP_CHILD_TABLE: str = os.getenv(
+        "MULTIMODAL_CLIP_CHILD_TABLE",
+        "nexus_child_clip",
+    )
+    MULTIMODAL_DOCUMENTS_TABLE: str = os.getenv("MULTIMODAL_DOCUMENTS_TABLE", "nexus_documents")
+    MULTIMODAL_IMAGE_CACHE_DIR: str = os.getenv(
+        "MULTIMODAL_IMAGE_CACHE_DIR",
+        os.path.join(PROJECT_ROOT, "data", "ingested_images"),
+    )
+    EMBEDDING_DEVICE: str = os.getenv("EMBEDDING_DEVICE", "cuda")
+    ORT_PROVIDER: str = os.getenv("ORT_PROVIDER", "CUDAExecutionProvider")
+    ORT_PROVIDERS = [ORT_PROVIDER, "CPUExecutionProvider"] if ORT_PROVIDER else ["CPUExecutionProvider"]

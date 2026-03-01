@@ -8,8 +8,8 @@ from langchain_core.output_parsers import StrOutputParser
 from src.core.config import Config
 from src.core.user_settings import get_setting
 from src.rag.ingestion import ingest_file
+from src.rag.ingestion_multimodal import purge_multimodal_rows
 from src.core.database import WatchedPathsRepository, ChatRepository # Just to be safe, though not needed directly here yet
-from src.rag.storage import get_db_connection, get_table, get_source_field_for_table
 
 
 class Organizer:
@@ -58,49 +58,17 @@ class Organizer:
             shutil.move(file_path, dest_path)
             print(f"Moved '{filename}' to '{category}'")
             
-            # 5. Ingest
-            # We need to find which table this watched path belongs to.
-            # Ideally we pass this info or look it up.
-            # For now, let's look it up or rely on the caller to handle ingestion if it's a batch?
-            # The requirements say: "Ingest: Nexus takes ownership... indexing... Database Sync: Delete old, Ingest new"
-            
-            # Find the table name for this watched root
-            # efficient way: The watcher service knows the table name. 
-            # But let's look it up from DB if we can, or just take it as arg?
-            # Let's verify with the repo.
-            
-            if not table_name:
-                watched_paths = self.repo.get_watched_paths()
-                for wp in watched_paths:
-                    if wp["path"] == watched_root:
-                        table_name = wp["table_name"]
-                        break
-            
-            if table_name:
-                # 6. Delete old record from LanceDB (sync move)
-                try:
-                    tbl = get_table(table_name)
-                    if tbl:
-                        source_field = get_source_field_for_table(tbl)
-                        # Escape single quotes for filter
-                        escaped_old_path = file_path.replace("'", "''")
-                        # Count records before deletion to report accurately
-                        filter_expr = f"{source_field} = '{escaped_old_path}'"
-                        results = tbl.search().where(filter_expr).limit(None).to_list()
-                        deleted_count = len(results)
+            # 5. Sync the shared multimodal index after the move.
+            try:
+                purge_multimodal_rows(file_path)
+            except Exception as e:
+                print(f"Failed to purge old multimodal record: {e}")
 
-                        tbl.delete(filter_expr)
-
-                        print(f"Deleted {deleted_count} record(s) for '{file_path}' from '{table_name}' using field '{source_field}'")
-                except Exception as e:
-                    print(f"Failed to delete old record: {e}")
-
-                # 7. Ingest into the dedicated table
-                try:
-                    ingest_file(dest_path, table_name, strategy="parent")
-                    print(f"Ingested '{dest_path}' into '{table_name}'")
-                except Exception as e:
-                    print(f"Ingestion failed for organized file: {e}")
+            try:
+                ingest_file(dest_path, strategy="multimodal")
+                print(f"Ingested '{dest_path}' into the shared multimodal index")
+            except Exception as e:
+                print(f"Ingestion failed for organized file: {e}")
 
         except Exception as e:
             print(f"Failed to move file: {e}")

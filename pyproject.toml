@@ -13,6 +13,7 @@ dependencies = [
     "requests",
     "python-dotenv",
     "pydantic",
+    "numpy",
     "pandas",
     "lancedb",
     "pypdf",
@@ -23,7 +24,14 @@ dependencies = [
     "langchain-classic>=0.3.15",
     "langchain-ollama>=0.2.0",
     "langchain-text-splitters>=0.3.0",
-    "langgraph"
+    "langgraph",
+    "onnxruntime-gpu",
+    "transformers",
+    "tokenizers",
+    "Pillow",
+    "PyMuPDF",
+    "python-docx",
+    "beautifulsoup4"
 ]
 
 [dependency-groups]
