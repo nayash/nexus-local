@@ -1,8 +1,64 @@
 from src.core.config import Config
 from src.tools.schemas import SearchResult
 from src.rag.ingestion_multimodal import search_multimodal
+from src.rag.schemas import parse_extra
 from typing import List
 import os
+
+
+def _normalize_whitespace(value: str) -> str:
+    return " ".join((value or "").split())
+
+
+def _trim_excerpt(text: str, limit: int) -> str:
+    cleaned = _normalize_whitespace(text)
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 3].rstrip() + "..."
+
+
+def _excerpt_around_match(full_text: str, matched_text: str, window: int = 700) -> str:
+    cleaned_full = _normalize_whitespace(full_text)
+    cleaned_match = _normalize_whitespace(matched_text)
+    if not cleaned_full:
+        return ""
+    if not cleaned_match:
+        return _trim_excerpt(cleaned_full, window)
+
+    full_lower = cleaned_full.lower()
+    match_lower = cleaned_match.lower()
+    index = full_lower.find(match_lower)
+    if index == -1:
+        return _trim_excerpt(cleaned_full, window)
+
+    half_window = max(window // 2, len(cleaned_match))
+    start = max(0, index - half_window)
+    end = min(len(cleaned_full), index + len(cleaned_match) + half_window)
+    excerpt = cleaned_full[start:end].strip()
+    if start > 0:
+        excerpt = "..." + excerpt
+    if end < len(cleaned_full):
+        excerpt = excerpt + "..."
+    return excerpt
+
+
+def _build_text_result_content(row: dict) -> str:
+    full_text = (row.get("text") or "").strip()
+    extra = parse_extra(row.get("extra"))
+    matched_text = (extra.get("matched_text") or "").strip()
+    page = row.get("page")
+
+    sections = []
+    if page:
+        sections.append(f"Page: {page}")
+    if matched_text:
+        sections.append(f"Most relevant excerpt: {_trim_excerpt(matched_text, 320)}")
+    if full_text:
+        sections.append(
+            f"Supporting passage: {_excerpt_around_match(full_text, matched_text, window=900)}"
+        )
+    return "\n".join(section for section in sections if section)
+
 
 def search_local(query: str, file_filter: str = None) -> List[SearchResult]:
     """
@@ -62,7 +118,7 @@ def _search_multimodal_results(query: str, file_filter: str = None, top_k: int =
             content = placeholder
             title = f"Local Image ({source_type}): {base_name}"
         else:
-            content = row.get("text") or ""
+            content = _build_text_result_content(row)
             title = f"Local File ({source_type}): {base_name}"
 
         results.append(

@@ -18,7 +18,7 @@ def get_llm(model_name: str = "llama3.1"):
         model=model_name, # can be cloud model too, need API Key
         temperature=0,
         base_url=Config.OLLAMA_BASE_URL, # should point to https://api.ollama.com for cloud models
-        headers={"X-Thinking-Mode": "enable"}
+        # headers={"X-Thinking-Mode": "enable"} # TODO use this based on a classifier
     )
     return llm.bind_tools(TOOLS)
 
@@ -76,6 +76,8 @@ SYSTEM_PROMPT = """You are Nexus, a specialized research assistant with access t
    - Try ONE alternative or apologize. Infinite retries are forbidden.
    - **CRITICAL**: DO NOT output raw JSON strings (e.g. `{"name": ...}`). ALWAYS use the native tool calling capability.
    - If you see a tool call in the output but it's just text, you failed. Use the proper tool structure.
+   - For short factual questions (e.g. "who is protagonist?", "what is the title?"), answer directly in the first sentence.
+   - Do NOT start with filler like "The provided text..." or give a broad summary unless the user asked for one.
 
 9. **SOURCES:**
    - DO NOT list sources in your response.
@@ -121,16 +123,158 @@ def _get_last_user_message_content(messages) -> str:
             return getattr(msg, "content", "") or ""
     return ""
 
-def get_cached_llm(model_name: str, with_tools: bool = True):
-    cache_key = f"{model_name}_{with_tools}"
-    if cache_key not in _llm_cache:
-        print(f"   ⚙️ Initializing LLM: {model_name} (Tools: {with_tools})")
-        llm = ChatOllama(
-            model=model_name,
-            temperature=0,
-            base_url=Config.OLLAMA_BASE_URL,
-            headers={"X-Thinking-Mode": "enable"}
+
+def _get_latest_message_type(messages) -> str:
+    if not messages:
+        return ""
+    return getattr(messages[-1], "type", "") or ""
+
+
+def _collect_recent_tool_contents(messages, limit: int = 3) -> list[str]:
+    contents = []
+    for msg in reversed(messages):
+        if getattr(msg, "type", None) != "tool":
+            continue
+        contents.append(getattr(msg, "content", "") or "")
+        if len(contents) >= limit:
+            break
+    return contents
+
+
+def _is_short_factual_question(text: str) -> bool:
+    normalized = (text or "").strip()
+    if not normalized:
+        return False
+
+    compact = " ".join(normalized.lower().split())
+    word_count = len(compact.split())
+    if len(compact) > 140 or word_count > 16:
+        return False
+
+    factual_prefixes = (
+        "who ",
+        "what ",
+        "when ",
+        "where ",
+        "which ",
+        "whose ",
+        "is ",
+        "are ",
+        "did ",
+        "does ",
+        "do ",
+        "how did ",
+        "how does ",
+        "how many ",
+        "how much ",
+    )
+    return compact.endswith("?") or compact.startswith(factual_prefixes)
+
+
+def _strip_reasoning_artifacts(content: str) -> str:
+    cleaned = (content or "").strip()
+    if not cleaned:
+        return cleaned
+
+    if "</think>" in cleaned:
+        cleaned = cleaned.split("</think>", 1)[1].strip()
+
+    cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"^[^\w\"'(*\[]+\s*", "", cleaned)
+    return cleaned.strip()
+
+
+def _should_use_reasoning_mode(messages) -> bool:
+    last_user_content = _get_last_user_message_content(messages)
+    latest_type = _get_latest_message_type(messages)
+    normalized = " ".join((last_user_content or "").lower().split())
+    words = normalized.split()
+    word_count = len(words)
+    char_count = len(normalized)
+    question_count = last_user_content.count("?")
+
+    if _is_short_factual_question(last_user_content):
+        return False
+
+    strong_complex_patterns = (
+        "summarize",
+        "summary",
+        "analyze",
+        "analysis",
+        "explain",
+        "interpret",
+        "comparison",
+        "compare",
+        "contrast",
+        "critique",
+        "evaluate",
+        "reason about",
+        "walk me through",
+        "step by step",
+        "pros and cons",
+        "key themes",
+        "main arguments",
+    )
+    if any(pattern in normalized for pattern in strong_complex_patterns):
+        return True
+
+    if question_count > 1:
+        return True
+
+    if char_count > 220 or word_count > 32:
+        return True
+
+    conjunction_count = sum(normalized.count(token) for token in (" and ", " or ", " then ", " also "))
+    if conjunction_count >= 2:
+        return True
+
+    if normalized.startswith("why "):
+        return True
+
+    if normalized.startswith("how "):
+        simple_how_patterns = (
+            "how many",
+            "how much",
+            "how old",
+            "how long",
+            "how far",
+            "how tall",
+            "how big",
+            "how did the story end",
         )
+        if not any(normalized.startswith(pattern) for pattern in simple_how_patterns):
+            return True
+
+    if latest_type == "tool":
+        tool_contents = _collect_recent_tool_contents(messages, limit=3)
+        combined_tool_size = sum(len(content) for content in tool_contents)
+        if combined_tool_size > 3500:
+            return True
+        if len(tool_contents) > 1:
+            return True
+        if tool_contents and any(marker in tool_contents[0].lower() for marker in (
+            "summary",
+            "analysis",
+            "key points",
+            "content truncated",
+        )):
+            return True
+
+    return False
+
+
+def get_cached_llm(model_name: str, with_tools: bool = True, thinking_mode: bool = False):
+    cache_key = f"{model_name}_{with_tools}_{thinking_mode}"
+    if cache_key not in _llm_cache:
+        print(f"   ⚙️ Initializing LLM: {model_name} (Tools: {with_tools}, Thinking: {thinking_mode})")
+        init_kwargs = {
+            "model": model_name,
+            "temperature": 0,
+            "base_url": Config.OLLAMA_BASE_URL,
+        }
+        if thinking_mode:
+            init_kwargs["headers"] = {"X-Thinking-Mode": "enable"}
+        llm = ChatOllama(**init_kwargs)
         if with_tools:
             _llm_cache[cache_key] = llm.bind_tools(TOOLS)
         else:
@@ -146,9 +290,13 @@ def agent_node(state: AgentState):
     
     messages = [SystemMessage(content=SYSTEM_PROMPT)] + trimmed_history
     print(f'messages: size: {len(messages)} --> {messages}')
+    last_user_content = _get_last_user_message_content(messages)
+    latest_message_type = _get_latest_message_type(messages)
+    use_reasoning_mode = latest_message_type == "tool" and _should_use_reasoning_mode(messages)
+    print(f"agent_node: latest_message_type={latest_message_type}, reasoning_mode={use_reasoning_mode}")
     # 1. Retrieve LLM based on UserSettings
     current_model = get_setting("model_name", "llama3.1")
-    llm_instance = get_cached_llm(current_model, with_tools=True)
+    llm_instance = get_cached_llm(current_model, with_tools=True, thinking_mode=use_reasoning_mode)
         
     # --- FOCUS MODE CHECK ---
     # NOW: Read from state, not session
@@ -178,6 +326,16 @@ def agent_node(state: AgentState):
             # Create a new system message with the added instruction
             new_content = messages[0].content + focus_instruction
             messages[0] = SystemMessage(content=new_content)
+
+    if _is_short_factual_question(last_user_content) and isinstance(messages[0], SystemMessage):
+        concise_instruction = (
+            "\n\n### CONCISE FACT MODE\n"
+            "The user's latest message is a short factual question.\n"
+            "After using any needed tool results, answer in 1 sentence first.\n"
+            "Keep it under 40 words unless the user explicitly asks for detail.\n"
+            "Do not provide a summary, analysis, or extra background unless requested.\n"
+        )
+        messages[0] = SystemMessage(content=messages[0].content + concise_instruction)
     
     # 2. Invoke the LLM
     response = llm_instance.invoke(messages)
@@ -187,8 +345,6 @@ def agent_node(state: AgentState):
     # Fix LLM truncating query to just filenames (e.g., query="GAN.pdf" vs. "Summarize GAN.pdf")
     # This ensures the search engine gets the FULL intent for metadata filtering & semantic search.
     if response.tool_calls:
-        last_user_content = _get_last_user_message_content(messages)
-
         for tool_call in response.tool_calls:
             if tool_call["name"] == "local_search_tool":
                 args = tool_call.get("args", {})
@@ -260,5 +416,10 @@ def agent_node(state: AgentState):
                 
              except Exception as e:
                 print(f"   ❌ RESCUE FAILED: {e}")
+
+    if not response.tool_calls and response.content:
+        cleaned_content = _strip_reasoning_artifacts(response.content)
+        if cleaned_content != response.content:
+            response.content = cleaned_content
 
     return {"messages": [response]}

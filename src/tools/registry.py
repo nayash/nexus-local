@@ -97,7 +97,11 @@ def local_search_tool(query: str, file_filter: str = None):
     framing_header = (
         "The following content was automatically retrieved from the user's locally indexed files "
         "in response to their query. The user did NOT paste or share this text directly.\n"
-        "Answer the user's original question using this retrieved content as your source.\n"
+        "Answer ONLY the user's original question using this retrieved content as your source.\n"
+        "If the user asks a short factual question (for example who/what/when/where/which), "
+        "give the direct answer in the first sentence.\n"
+        "Do NOT start with phrases like 'The provided text' and do NOT summarize the document "
+        "unless the user explicitly asks for a summary or analysis.\n"
         "─────────────────────────────────────────\n"
     )
     context_str = framing_header + context_str
