@@ -6,6 +6,12 @@
 **Target Platform:** Consumer Laptop (Nvidia 8GB VRAM)
 
 ---
+<img width="1627" height="489" alt="Screenshot from 2026-03-01 00-27-59" src="https://github.com/user-attachments/assets/ee9d017c-0254-41f1-9ab5-031d5cc678ac" />
+
+<img width="1915" height="1042" alt="Screenshot from 2026-02-27 19-46-35" src="https://github.com/user-attachments/assets/3712edfc-d692-4333-b1c8-f025b9af946e" />
+
+<img width="1916" height="1040" alt="Screenshot from 2026-03-01 00-21-45" src="https://github.com/user-attachments/assets/1737f44b-7154-471e-aacd-c338b9fab3ee" />
+---
 
 ## 1. Executive Summary
 **Nexus-Local** is a privacy-first, hybrid AI Desktop Application that unifies **Open Web Search** and **Local Knowledge Retrieval**. Unlike cloud-based tools, Nexus runs entirely on your machine. It uses a stateful graph architecture (LangGraph) to intelligently route user intent, retrieve information from the best source (Web vs. Local), and synthesize answers using a local LLM.
