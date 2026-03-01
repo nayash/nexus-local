@@ -42,6 +42,7 @@ class MultimodalOnnxEmbedder:
         self.device = device
         self.ort = ort
         self.providers = providers or list(Config.ORT_PROVIDERS)
+        self.active_providers = list(self.providers)
 
         tokenizer_dir = model_dir
         tokenizer_subdir = os.path.join(model_dir, "tokenizer")
@@ -64,8 +65,15 @@ class MultimodalOnnxEmbedder:
 
         if self.device.lower() == "cuda":
             desired = "CUDAExecutionProvider"
-            if desired not in self.text_session.get_providers() or desired not in self.vision_session.get_providers():
-                raise RuntimeError("CUDAExecutionProvider is not active for multimodal embedding sessions")
+            text_providers = set(self.text_session.get_providers())
+            vision_providers = set(self.vision_session.get_providers())
+            if desired not in text_providers or desired not in vision_providers:
+                cpu_providers = ["CPUExecutionProvider"]
+                print("⚠️ CUDAExecutionProvider is unavailable for multimodal embeddings. Falling back to CPUExecutionProvider.")
+                self.text_session = ort.InferenceSession(text_model_path, providers=cpu_providers)
+                self.vision_session = ort.InferenceSession(vision_model_path, providers=cpu_providers)
+                self.device = "cpu"
+                self.active_providers = cpu_providers
 
     def embed_text(self, text: str) -> List[float]:
         return self.embed_texts([text])[0]

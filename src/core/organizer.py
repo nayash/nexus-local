@@ -1,15 +1,64 @@
 import os
 import shutil
-import time
 from typing import List, Optional
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from src.core.config import Config
 from src.core.user_settings import get_setting
+from src.embeddings.multimodal_onnx import get_multimodal_embedder
 from src.rag.ingestion import ingest_file
 from src.rag.ingestion_multimodal import purge_multimodal_rows
-from src.core.database import WatchedPathsRepository, ChatRepository # Just to be safe, though not needed directly here yet
+from src.core.database import WatchedPathsRepository
+
+
+ALLOWED_CATEGORIES = [
+    "Finance",
+    "LegalContracts",
+    "IdentityPersonal",
+    "WorkDocuments",
+    "Correspondence",
+    "Programming",
+    "DataLogs",
+    "Technology Documents",
+    "KeySecrets",
+    "InstallersSoftware",
+    "Images",
+    "AudioVideo",
+    "CreativeAssets",
+    "BooksLibrary",
+    "Travel",
+    "Education",
+    "Archives",
+    "Unsorted",
+]
+
+CATEGORY_ALIASES = {
+    "_Unsorted": "Unsorted",
+    "Development": "Programming",
+    "TechDocs": "Technology Documents",
+}
+
+IMAGE_CATEGORY_PROFILES = {
+    "Finance": "an invoice, bill, receipt, bank statement, or financial document",
+    "LegalContracts": "a contract, agreement, legal notice, or signed legal page",
+    "IdentityPersonal": "an ID card, passport, certificate, or personal identity document",
+    "WorkDocuments": "a generic office document, memo, or business paperwork",
+    "Correspondence": "a letter, email screenshot, or message thread",
+    "Programming": "source code, terminal output, an IDE window, or a developer tool screenshot",
+    "DataLogs": "a log export, dashboard screenshot, chart, graph, or tabular system output",
+    "Technology Documents": "technical documentation, a diagram, a manual, or a product/specification page",
+    "KeySecrets": "passwords, keys, secret tokens, or sensitive credential material",
+    "InstallersSoftware": "an installer wizard, software package screen, or app setup media",
+    "Images": "a general photo, picture, or non-document visual image",
+    "AudioVideo": "a media player frame, waveform, album art, or video still",
+    "CreativeAssets": "a design mockup, illustration, poster, slide, or visual asset",
+    "BooksLibrary": "a book cover, scanned book page, or publication page",
+    "Travel": "a ticket, itinerary, hotel booking, map, or travel-related document",
+    "Education": "lecture notes, study material, worksheet, slide, or classroom content",
+    "Archives": "an old scanned document, archive page, or historical record",
+    "Unsorted": "an ambiguous image that does not fit any specific category",
+}
 
 
 class Organizer:
@@ -23,6 +72,7 @@ class Organizer:
             temperature=0
         )
         self.repo = WatchedPathsRepository()
+        self._clip_category_vectors = None
 
     def organize_file(self, file_path: str, watched_root: str, table_name: Optional[str] = None):
         """
@@ -43,9 +93,9 @@ class Organizer:
 
         # 2. Get Existing Categories
         existing_folders = self._get_existing_folders(watched_root)
-        
+
         # 3. Ask LLM
-        category = self._categorize_file(filename, content_snippet, existing_folders)
+        category = self._categorize_file(filename, content_snippet, existing_folders, file_path=file_path)
         
         # 4. Move File
         dest_folder = os.path.join(watched_root, category)
@@ -123,20 +173,14 @@ class Organizer:
             return "None"
         return ", ".join(folders)
 
-    def _categorize_file(self, filename: str, content: str, existing_folders: str) -> str:
+    def _categorize_file(self, filename: str, content: str, existing_folders: str, file_path: Optional[str] = None) -> str:
         # Fallback for empty/garbage content
         if not content or len(content) < 10:
             content = "[Content unreadable. RELY ON FILENAME ALONE]"
 
-        # The Fixed Taxonomy
-        categories = [
-            "Finance", "LegalContracts", "IdentityPersonal", "WorkDocuments", "Correspondence",
-            "Programming", "DataLogs", "Technology Documents", "KeySecrets", "InstallersSoftware",
-            "Images", "AudioVideo", "CreativeAssets",
-            "BooksLibrary", "Travel", "Education", "Archives", "Unsorted"
-        ]
-        
+        categories = list(ALLOWED_CATEGORIES)
         category_list_str = ", ".join(categories)
+        clip_hint = self._categorize_image_with_clip(file_path)
 
         prompt = ChatPromptTemplate.from_template(
             """
@@ -151,19 +195,22 @@ class Organizer:
             Filename: {filename}
             Content Snippet:
             {content}
+            Image Semantic Hint:
+            {clip_hint}
             
             RULES:
             1. You MUST choose from the Allowed Categories list. Do not invent new ones.
             2. CONSIDER the file content AND filename (if it is meaningful) to decide the category.
-            3. If the file is source code (py, js, sh, or other common code extension), choose 'Development'.
+            3. If the file is source code (py, js, sh, or other common code extension), choose 'Programming'.
             4. If the file is a log or data dump (json, csv, txt, log, etc.), choose 'DataLogs'.
             5. If the file is an invoice, receipt, or bill, choose 'Finance'.
             6. If the file is an image and you can't determine the category by name, choose 'Images'.
-            7. If the file is an academic paper or manual (txt, pdf, doc, docx, etc.), choose 'TechDocs'.
+            7. If the file is an academic paper, technical manual, or documentation, choose 'Technology Documents'.
             8. If the file is txt, pdf, docx, epub, mobi, etc. and it is a book, choose 'BooksLibrary'
             9. If the file is user's personal document like aadhar card, pan card, passport, etc., choose 'IdentityPersonal'.
             10. If uncertain, unclear, or garbage, choose 'Unsorted'.
-            11. Output ONLY the category name.
+            11. For images, use the Image Semantic Hint when it is present, together with the filename.
+            12. Output ONLY the category name.
             
             YOUR CHOICE:
             """
@@ -175,30 +222,106 @@ class Organizer:
             response = chain.invoke({
                 "category_list": category_list_str,
                 "filename": filename,
-                "content": content
+                "content": content,
+                "clip_hint": clip_hint or "None",
             })
             
             # Simple cleanup to ensure it picked a valid one
             cleaned = response.strip().replace("'", "").replace('"', "")
-            
-            # Validation: If LLM hallucinated, force Unsorted
-            # (Fuzzy match could be added here, but exact match is safer for now)
-            if cleaned not in categories:
-                # Try to find a partial match (e.g., LLM said "Category: Finance")
-                for valid_cat in categories:
-                    if valid_cat in cleaned:
-                        return valid_cat
-                return "_Unsorted"
-                
-            return cleaned
+            normalized = self._normalize_category(cleaned)
+            if normalized:
+                return normalized
+            return "Unsorted"
             
         except Exception as e:
             print(f"LLM Categorization failed: {e}")
-            return "_Unsorted"
+            return clip_hint or "Unsorted"
+
+    def _categorize_image_with_clip(self, file_path: Optional[str]) -> Optional[str]:
+        if not file_path:
+            return None
+
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext not in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}:
+            return None
+
+        clip_embedder = get_multimodal_embedder()
+        if not clip_embedder:
+            return None
+
+        try:
+            from PIL import Image
+        except ImportError:
+            return None
+
+        try:
+            with Image.open(file_path) as image:
+                image_vector = clip_embedder.embed_image(image.convert("RGB"))
+        except Exception as exc:
+            print(f"CLIP image categorization skipped for {file_path}: {exc}")
+            return None
+
+        category_vectors = self._get_clip_category_vectors(clip_embedder)
+        if not category_vectors:
+            return None
+
+        best_category = None
+        best_score = None
+        for category, vector in category_vectors.items():
+            score = sum(float(a) * float(b) for a, b in zip(image_vector, vector))
+            if best_score is None or score > best_score:
+                best_score = score
+                best_category = category
+
+        return best_category
+
+    def _get_clip_category_vectors(self, clip_embedder):
+        if self._clip_category_vectors is not None:
+            return self._clip_category_vectors
+
+        categories = list(IMAGE_CATEGORY_PROFILES.keys())
+        prompts = [
+            f"This image is {IMAGE_CATEGORY_PROFILES[category]}."
+            for category in categories
+        ]
+
+        try:
+            vectors = clip_embedder.embed_texts(prompts)
+        except Exception as exc:
+            print(f"CLIP text prompts unavailable for organizer: {exc}")
+            self._clip_category_vectors = {}
+            return self._clip_category_vectors
+
+        self._clip_category_vectors = {
+            category: vector
+            for category, vector in zip(categories, vectors)
+        }
+        return self._clip_category_vectors
+
+    def _normalize_category(self, value: str) -> Optional[str]:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            return None
+
+        direct_matches = {}
+        for category in ALLOWED_CATEGORIES:
+            direct_matches[category.lower()] = category
+        for alias, canonical in CATEGORY_ALIASES.items():
+            direct_matches[alias.lower()] = canonical
+
+        exact = direct_matches.get(cleaned.lower())
+        if exact:
+            return exact
+
+        for needle, canonical in direct_matches.items():
+            if needle in cleaned.lower():
+                return canonical
+
+        return None
 
     def _parse_category_from_response(self, response: str) -> str:
         if not response:
-            return "_Unsorted"
+            return "Unsorted"
 
         import re
         
@@ -212,7 +335,7 @@ class Organizer:
         matches = re.findall(r'[a-zA-Z0-9_]+', clean_response)
         
         if not matches:
-            return "_Unsorted"
+            return "Unsorted"
             
         # Usually the first word is the best bet if we stripped "Category:"
         candidate = matches[0]
@@ -231,7 +354,7 @@ class Organizer:
             candidate = "Docs_" + candidate
 
         print(f'Parsed category: {candidate}')
-        return candidate
+        return self._normalize_category(candidate) or "Unsorted"
 
     def _handle_collisions(self, dest_path: str) -> str:
         """
