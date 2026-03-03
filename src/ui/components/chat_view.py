@@ -461,6 +461,11 @@ class ChatView(ft.Container):
         """
         import re
 
+        def normalize_think_tags(raw_text: str) -> str:
+            normalized = raw_text.replace("&lt;think&gt;", "<think>")
+            normalized = normalized.replace("&lt;/think&gt;", "</think>")
+            return normalized
+
         def append_rich_content(target_controls, chunk_text):
             plot_pattern = re.compile(r'<nexus-plot(?: mime="([^"]+)")?>(.*?)</nexus-plot>', re.DOTALL)
             open_plot_pattern = re.compile(r'<nexus-plot(?: mime="[^"]*")?>', re.DOTALL)
@@ -523,6 +528,7 @@ class ChatView(ft.Container):
             # Type Safety Check
             if not isinstance(text, str):
                 text = str(text)
+            text = normalize_think_tags(text)
 
             # Strip wrapping code fences that some models accidentally add
             # e.g. ```\nThe answer is...\n``` → The answer is...
@@ -540,7 +546,7 @@ class ChatView(ft.Container):
             # 1. Check for <think> block
             # We only handle ONE think block for now (standard for R1/DeepSeek)
             # Regex to find the start of the block
-            start_match = re.search(r'<think>', text)
+            start_match = re.search(r'<think\b[^>]*>', text, flags=re.IGNORECASE)
             
             if start_match:
                 # A. Content BEFORE the think block
@@ -551,7 +557,7 @@ class ChatView(ft.Container):
                 # B. The Think Block
                 # Check if it is closed
                 remainder = text[start_match.end():]
-                end_match = re.search(r'</think>', remainder)
+                end_match = re.search(r'</think>', remainder, flags=re.IGNORECASE)
                 
                 if end_match:
                     # Closed thought
@@ -571,7 +577,7 @@ class ChatView(ft.Container):
                                             code_theme="atom-one-dark"
                                         )
                                     ],
-                                    # initially_expanded=False,
+                                    initially_expanded=False,
                                     bgcolor=ft.Colors.TRANSPARENT,
                                     collapsed_bgcolor=ft.Colors.TRANSPARENT,
                                     text_color=ColorPalette.TEXT_SECONDARY,

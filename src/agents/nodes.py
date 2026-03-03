@@ -110,6 +110,9 @@ SYSTEM_PROMPT = """You are Nexus, a specialized research assistant with access t
     - Assume standard data science libraries are available: `numpy`, `pandas`, `sympy`.
     - DO NOT use this for questions that can be answered directly, via search, or from your training data.
     - If the code execution fails, try ONE alternative approach or explain the issue to the user.
+14. **THINKING MODE (ADVANCED):**
+    - If the user's query is complex, multi-step, or analytical (e.g., "analyze", "compare", "explain"), you can enable "thinking mode" by including the header `X-Thinking-Mode: enable` in your LLM initialization.
+    - In thinking mode, you can use special `<think>` blocks in your response to separate your internal reasoning from the final answer.
 """
 
 
@@ -182,6 +185,11 @@ def _strip_reasoning_artifacts(content: str) -> str:
     cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL)
     cleaned = re.sub(r"^[^\w\"'(*\[]+\s*", "", cleaned)
     return cleaned.strip()
+
+
+def _contains_think_block(content: str) -> bool:
+    normalized = (content or "").lower()
+    return "<think" in normalized and "</think>" in normalized
 
 
 def _should_use_reasoning_mode(messages) -> bool:
@@ -292,8 +300,19 @@ def agent_node(state: AgentState):
     print(f'messages: size: {len(messages)} --> {messages}')
     last_user_content = _get_last_user_message_content(messages)
     latest_message_type = _get_latest_message_type(messages)
-    use_reasoning_mode = latest_message_type == "tool" and _should_use_reasoning_mode(messages)
-    print(f"agent_node: latest_message_type={latest_message_type}, reasoning_mode={use_reasoning_mode}")
+    use_reasoning_mode = True # latest_message_type == "tool" and _should_use_reasoning_mode(messages)
+    if latest_message_type == "human":
+        print(
+            "agent_node: new query received | "
+            f"thinking_mode={use_reasoning_mode} | "
+            f'query="{last_user_content[:160]}"'
+        )
+    else:
+        print(
+            "agent_node: follow-up invocation | "
+            f"latest_message_type={latest_message_type} | "
+            f"thinking_mode={use_reasoning_mode}"
+        )
     # 1. Retrieve LLM based on UserSettings
     current_model = get_setting("model_name", "llama3.1")
     llm_instance = get_cached_llm(current_model, with_tools=True, thinking_mode=use_reasoning_mode)
@@ -418,8 +437,11 @@ def agent_node(state: AgentState):
                 print(f"   ❌ RESCUE FAILED: {e}")
 
     if not response.tool_calls and response.content:
-        cleaned_content = _strip_reasoning_artifacts(response.content)
-        if cleaned_content != response.content:
-            response.content = cleaned_content
+        if _contains_think_block(response.content):
+            print("agent_node: preserving <think> block in assistant response")
+        else:
+            cleaned_content = _strip_reasoning_artifacts(response.content)
+            if cleaned_content != response.content:
+                response.content = cleaned_content
 
     return {"messages": [response]}
