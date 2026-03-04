@@ -1,13 +1,51 @@
+import re
+
 from langchain_core.messages import HumanMessage, AIMessage
 from src.agents.graph import build_graph
 
 
 # Global cache for the compiled graph
 _cached_graph = None
+_TOOL_ARTIFACT_NAMES = {
+    "web_search_tool",
+    "local_search_tool",
+    "get_current_time",
+    "analyze_tabular_file_tool",
+    "execute_python_code",
+}
+_TEXT_TOOL_CALL_BLOCK_PATTERN = re.compile(
+    r"<\|start_of_tool_call\|>\s*(.*?)\s*<\|end_of_tool_call\|>",
+    re.DOTALL,
+)
+_TEXT_TOOL_CALL_NAME_PATTERN = re.compile(r"^\s*([A-Za-z_]\w*)\s*\(.*\)\s*$", re.DOTALL)
+
+
+def _looks_like_tool_artifact(text: str) -> bool:
+    candidate = (text or "").strip()
+    if not candidate:
+        return False
+
+    tagged_match = _TEXT_TOOL_CALL_BLOCK_PATTERN.search(candidate)
+    if tagged_match:
+        candidate = tagged_match.group(1).strip()
+
+    if candidate.startswith("{") and candidate.endswith("}"):
+        tool_name_match = re.search(r'"(?:tool|name)"\s*:\s*"([^"]+)"', candidate)
+        if tool_name_match and tool_name_match.group(1) in _TOOL_ARTIFACT_NAMES:
+            return True
+
+    function_match = _TEXT_TOOL_CALL_NAME_PATTERN.match(candidate)
+    if function_match and function_match.group(1) in _TOOL_ARTIFACT_NAMES:
+        return True
+
+    return False
 
 
 def _format_message_for_ui(content: str = "", additional_kwargs: dict | None = None) -> str:
     text_content = content or ""
+    if _looks_like_tool_artifact(text_content):
+        return ""
+
     metadata = additional_kwargs or {}
     reasoning_content = (metadata.get("reasoning_content") or "").strip()
 

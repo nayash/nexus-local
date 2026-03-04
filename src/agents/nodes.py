@@ -1,6 +1,7 @@
+import ast
 import json
 import re
-from langchain_core.messages import SystemMessage, AIMessage
+from langchain_core.messages import SystemMessage
 from langchain_core.messages.tool import ToolCall
 from src.agents.state import AgentState
 from src.agents.utils import trim_messages
@@ -118,6 +119,10 @@ SYSTEM_PROMPT = """You are Nexus, a specialized research assistant with access t
 
 # Module-level cache for LLM instances to avoid frequent re-initialization
 _llm_cache = {}
+_TEXT_TOOL_CALL_BLOCK_PATTERN = re.compile(
+    r"<\|start_of_tool_call\|>\s*(.*?)\s*<\|end_of_tool_call\|>",
+    re.DOTALL,
+)
 
 def _get_last_user_message_content(messages) -> str:
     for msg in reversed(messages):
@@ -189,6 +194,127 @@ def _strip_reasoning_artifacts(content: str) -> str:
 def _contains_think_block(content: str) -> bool:
     normalized = (content or "").lower()
     return "<think" in normalized and "</think>" in normalized
+
+
+def _parse_json_like_object(raw_text: str) -> dict | None:
+    candidate = (raw_text or "").strip()
+    if not candidate:
+        return None
+
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError:
+        try:
+            parsed = ast.literal_eval(candidate)
+        except (SyntaxError, ValueError):
+            return None
+
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _parse_textual_tool_call(content: str):
+    text = (content or "").strip()
+    if not text:
+        return None
+
+    tagged_match = _TEXT_TOOL_CALL_BLOCK_PATTERN.search(text)
+    if tagged_match:
+        text = tagged_match.group(1).strip()
+
+    json_candidate = None
+    if "{" in text and "}" in text:
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        if end > start:
+            json_candidate = text[start:end]
+
+    if json_candidate:
+        tool_data = _parse_json_like_object(json_candidate)
+        if tool_data:
+            tool_name = tool_data.get("name") or tool_data.get("tool")
+            args = tool_data.get("parameters") or tool_data.get("args") or {}
+            if isinstance(tool_name, str) and isinstance(args, dict):
+                return tool_name, args
+
+    try:
+        parsed_expr = ast.parse(text, mode="eval").body
+    except SyntaxError:
+        return None
+
+    if not isinstance(parsed_expr, ast.Call):
+        return None
+    if not isinstance(parsed_expr.func, ast.Name):
+        return None
+    if parsed_expr.args:
+        return None
+
+    args = {}
+    for keyword in parsed_expr.keywords:
+        if keyword.arg is None:
+            return None
+        try:
+            args[keyword.arg] = ast.literal_eval(keyword.value)
+        except (SyntaxError, ValueError):
+            return None
+
+    return parsed_expr.func.id, args
+
+
+def _rescue_textual_tool_call(response) -> bool:
+    if getattr(response, "tool_calls", None) or not getattr(response, "content", ""):
+        return False
+
+    parsed_tool_call = _parse_textual_tool_call(response.content)
+    if not parsed_tool_call:
+        return False
+
+    tool_name, args = parsed_tool_call
+    print(f"   ⚠️ RESCUED TEXT TOOL CALL: {tool_name}")
+    response.tool_calls = [
+        ToolCall(
+            name=tool_name,
+            args=args,
+            id="call_rescue_" + str(hash(f"{tool_name}:{json.dumps(args, sort_keys=True, default=str)}")),
+        )
+    ]
+    response.content = ""
+    return True
+
+
+def _enrich_local_search_tool_calls(response, last_user_content: str):
+    if not response.tool_calls:
+        return
+
+    for tool_call in response.tool_calls:
+        if tool_call["name"] != "local_search_tool":
+            continue
+
+        args = tool_call.get("args", {})
+        query = args.get("query", "")
+
+        is_filename_only = re.match(r'^[\w\-. ]+\.(pdf|txt|md|csv|sh)$', query.strip(), re.IGNORECASE)
+        is_truncated = len(query) < len(last_user_content) * 0.5
+
+        if (is_filename_only or is_truncated) and 0 < len(last_user_content) < 1000:
+            print(f"   ✨ ENRICHING QUERY: '{query}' -> '{last_user_content}'")
+            tool_call["args"]["query"] = last_user_content
+
+
+def _rewrite_tabular_focus_tool_calls(response, focused_file: str, last_user_content: str):
+    if not response.tool_calls or not focused_file:
+        return
+    if not focused_file.lower().endswith((".csv", ".tsv", ".xlsx", ".xls")):
+        return
+
+    for tool_call in response.tool_calls:
+        if tool_call["name"] not in {"local_search_tool", "execute_python_code"}:
+            continue
+        print(f"   🔀 REWRITING TOOL CALL: {tool_call['name']} -> analyze_tabular_file_tool")
+        tool_call["name"] = "analyze_tabular_file_tool"
+        tool_call["args"] = {
+            "file_path": focused_file,
+            "user_query": last_user_content,
+        }
 
 
 def _should_use_reasoning_mode(messages) -> bool:
@@ -377,81 +503,14 @@ def agent_node(state: AgentState):
     response = _invoke_tool_decision(messages, current_model, use_reasoning_mode)
     print(f'llm response: {response}')
 
-    # --- 🛡️ QUERY ENRICHMENT LOGIC ---
-    # Fix LLM truncating query to just filenames (e.g., query="GAN.pdf" vs. "Summarize GAN.pdf")
-    # This ensures the search engine gets the FULL intent for metadata filtering & semantic search.
-    if response.tool_calls:
-        for tool_call in response.tool_calls:
-            if tool_call["name"] == "local_search_tool":
-                args = tool_call.get("args", {})
-                query = args.get("query", "")
+    # Rescue text-form tool calls before deciding whether to fall back to the
+    # final-answer pass. qwen models often emit textual tool syntax instead of
+    # populating native tool_calls.
+    _rescue_textual_tool_call(response)
 
-                # Heuristic: 
-                # 1. Query looks like a filename (ends in extension)
-                # 2. OR Query is significantly shorter than user message (loss of context)
-                # 3. AND User message is not massive (>1000 chars)
-                
-                is_filename_only = re.match(r'^[\w\-. ]+\.(pdf|txt|md|csv|sh)$', query.strip(), re.IGNORECASE)
-                is_truncated = len(query) < len(last_user_content) * 0.5
-                
-                if (is_filename_only or is_truncated) and 0 < len(last_user_content) < 1000:
-                    print(f"   ✨ ENRICHING QUERY: '{query}' -> '{last_user_content}'")
-                    # Update the args in place
-                    # Note: tool_call is a dict-like object in recent LangChain versions or a ToolCall dict
-                    if isinstance(tool_call, dict):
-                         tool_call["args"]["query"] = last_user_content
-                    else:
-                         # If it's an object (depending on version), might need different handling
-                         # But typically response.tool_calls is a list of ToolCall dicts
-                         tool_call["args"]["query"] = last_user_content
-
-        if focused_file and focused_file.lower().endswith((".csv", ".tsv", ".xlsx", ".xls")):
-            for tool_call in response.tool_calls:
-                if tool_call["name"] in {"local_search_tool", "execute_python_code"}:
-                    print(f"   🔀 REWRITING TOOL CALL: {tool_call['name']} -> analyze_tabular_file_tool")
-                    replacement_args = {
-                        "file_path": focused_file,
-                        "user_query": last_user_content,
-                    }
-                    if isinstance(tool_call, dict):
-                        tool_call["name"] = "analyze_tabular_file_tool"
-                        tool_call["args"] = replacement_args
-                    else:
-                        tool_call["name"] = "analyze_tabular_file_tool"
-                        tool_call["args"] = replacement_args
-
-    # --- 🛡️ RESCUE LOGIC: Fix "Chatty" Tool Calls ---
-    # If the model didn't trigger a native tool call, check if it wrote JSON in the text.
-    if not response.tool_calls and response.content:
-        content = response.content.strip()
-        
-        # Simple heuristic: starts with { and contains "name" and ("parameters" or "args")
-        if content.startswith("{") and '"name":' in content and ('"parameters":' in content or '"args":' in content):
-             print("   ⚠️ DETECTED CHATTY TOOL CALL. RESCUING...")
-             try:
-                # Find the JSON object
-                json_start = content.find("{")
-                json_end = content.rfind("}") + 1
-                json_str = content[json_start:json_end]
-                
-                # Fix Python None -> null for valid JSON
-                json_str_fixed = json_str.replace(": None", ": null").replace(": True", ": true").replace(": False", ": false")
-                
-                tool_data = json.loads(json_str_fixed)
-                
-                args = tool_data.get("parameters") or tool_data.get("args", {})
-                
-                tool_call = ToolCall(
-                    name=tool_data["name"],
-                    args=args,
-                    id="call_rescue_" + str(hash(json_str))
-                )
-                
-                response.tool_calls = [tool_call]
-                response.content = "" # Silence the chatty output
-                
-             except Exception as e:
-                print(f"   ❌ RESCUE FAILED: {e}")
+    # Normalize tool arguments after any native or rescued tool call.
+    _enrich_local_search_tool_calls(response, last_user_content)
+    _rewrite_tabular_focus_tool_calls(response, focused_file, last_user_content)
 
     if not response.tool_calls:
         print("agent_node: no tool call requested; regenerating final answer with streaming enabled")
