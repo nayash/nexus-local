@@ -272,6 +272,12 @@ def get_cached_llm(model_name: str, with_tools: bool = True, thinking_mode: bool
             "temperature": 0,
             "base_url": Config.OLLAMA_BASE_URL,
         }
+        # Some Ollama backends intermittently emit non-JSON bytes while streaming
+        # tool-calling responses (e.g. "invalid character 'N' ..."). Disabling
+        # streaming only for tool-calling paths avoids that parser failure while
+        # keeping normal chat behavior unchanged.
+        if with_tools:
+            init_kwargs["disable_streaming"] = "tool_calling"
         if thinking_mode:
             init_kwargs["headers"] = {"X-Thinking-Mode": "enable"}
         llm = ChatOllama(**init_kwargs)
