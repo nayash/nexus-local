@@ -60,7 +60,7 @@ def _build_text_result_content(row: dict) -> str:
     return "\n".join(section for section in sections if section)
 
 
-def search_local(query: str, file_filter: str = None) -> List[SearchResult]:
+def search_local(query: str, file_filter: str = "") -> List[SearchResult]:
     """
     Searches the local LanceDB for relevant document chunks using the active strategy.
     Args:
@@ -68,6 +68,8 @@ def search_local(query: str, file_filter: str = None) -> List[SearchResult]:
         file_filter: Optional absolute path to restrict search to a specific file.
     """
     
+    file_filter = (file_filter or "").strip() or None
+
     # Validation: Ensure focused file actually exists
     if file_filter and not os.path.exists(file_filter):
         print(f"⚠️ WARNING: Intent to focus on '{file_filter}' ignored because file does not exist.")

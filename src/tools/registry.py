@@ -11,7 +11,7 @@ from src.tools.tabular import (
     RESULT_MARKER,
 )
 from pydantic import BaseModel, Field
-from typing import Literal, Optional
+from typing import Literal
 from src.agents.utils import mini_rag_filter
 import os
 
@@ -28,9 +28,9 @@ class SearchInput(BaseModel):
 
 class LocalSearchInput(BaseModel):
     query: str = Field(description="The FULL natural language query. Ensure you include the action/intent (e.g., 'Summarize...', 'Find author of...'). DO NOT shorten the query to just keywords or filenames. The underlying search engine uses semantic search and metadata filtering, so natural language is required.")
-    file_filter: Optional[str] = Field(
-        default=None,
-        description="The absolute path of a specific file to search within. MUST be a valid, existing path provided in the context (e.g. from `focused_file` state). DO NOT guess or hallucinate paths based on filenames in the query. If the user mentions a filename but has not attached it, include the filename in the `query` field and leave this `file_filter` as None."
+    file_filter: str = Field(
+        default="",
+        description="The absolute path of a specific file to search within. MUST be a valid, existing path provided in the context (e.g. from `focused_file` state). DO NOT guess or hallucinate paths based on filenames in the query. If the user mentions a filename but has not attached it, include the filename in the `query` field and leave this `file_filter` as an empty string."
     )
 
 @tool(args_schema=SearchInput, response_format="content_and_artifact")
@@ -62,16 +62,17 @@ def web_search_tool(query: str, category: str = "general", time_range: str = "")
     return filtered_content, source_metadata
 
 @tool(args_schema=LocalSearchInput, response_format="content_and_artifact")
-def local_search_tool(query: str, file_filter: str = None):
+def local_search_tool(query: str, file_filter: str = ""):
     """
     Search the user's local private documents and files.
     Use this for questions about "Nexus", "Project", or personal data.
     """
-    print(f'calling search_local with query: {query} and file_filter: {file_filter}')
-    results = search_local(query, file_filter)
+    normalized_file_filter = (file_filter or "").strip() or None
+    print(f'calling search_local with query: {query} and file_filter: {normalized_file_filter}')
+    results = search_local(query, normalized_file_filter)
     
     # Increase context budget for focused search to 15,000 chars
-    context_budget = 15000 if file_filter else 10000
+    context_budget = 15000 if normalized_file_filter else 10000
     
     # Extract metadata first
     source_metadata = []

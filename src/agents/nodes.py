@@ -86,7 +86,7 @@ SYSTEM_PROMPT = """You are Nexus, a specialized research assistant with access t
 10. **STRICT FILE FILTER RULES:**
     - `file_filter` in `local_search_tool` is ONLY for explicitly attached/focused files.
     - If user mentions a filename buts hasn't attached it, include the filename in the `query` argument, NOT `file_filter`.
-    - Leave `file_filter` as None unless the user has attached a file to the chat.
+    - Leave `file_filter` as an empty string unless the user has attached a file to the chat.
 
 11. **QUERY PRESERVATION & INTENT:**
     - The search engine uses natural language understanding (NLU) for metadata filtering.
@@ -118,7 +118,6 @@ SYSTEM_PROMPT = """You are Nexus, a specialized research assistant with access t
 
 # Module-level cache for LLM instances to avoid frequent re-initialization
 _llm_cache = {}
-
 
 def _get_last_user_message_content(messages) -> str:
     for msg in reversed(messages):
@@ -280,14 +279,8 @@ def get_cached_llm(model_name: str, with_tools: bool = True, thinking_mode: bool
             "temperature": 0,
             "base_url": Config.OLLAMA_BASE_URL,
         }
-        # Some Ollama backends intermittently emit non-JSON bytes while streaming
-        # tool-calling responses (e.g. "invalid character 'N' ..."). Disabling
-        # streaming only for tool-calling paths avoids that parser failure while
-        # keeping normal chat behavior unchanged.
-        if with_tools:
-            init_kwargs["disable_streaming"] = "tool_calling"
         if thinking_mode:
-            init_kwargs["headers"] = {"X-Thinking-Mode": "enable"}
+            init_kwargs["reasoning"] = True
         llm = ChatOllama(**init_kwargs)
         if with_tools:
             _llm_cache[cache_key] = llm.bind_tools(TOOLS)
@@ -295,6 +288,27 @@ def get_cached_llm(model_name: str, with_tools: bool = True, thinking_mode: bool
             _llm_cache[cache_key] = llm
             
     return _llm_cache[cache_key]
+
+
+def _invoke_tool_decision(messages, model_name: str, use_reasoning_mode: bool):
+    llm_instance = get_cached_llm(
+        model_name,
+        with_tools=True,
+        thinking_mode=use_reasoning_mode,
+    )
+    # Tool-decision turns should not stream. Some Ollama backends emit malformed
+    # streamed chunks for tool-call responses, so force a single JSON response.
+    return llm_instance.invoke(messages, stream=False)
+
+
+def _invoke_final_answer(messages, model_name: str, use_reasoning_mode: bool):
+    llm_instance = get_cached_llm(
+        model_name,
+        with_tools=False,
+        thinking_mode=use_reasoning_mode,
+    )
+    # Final user-facing answers should stream to the UI.
+    return llm_instance.invoke(messages)
 
 def agent_node(state: AgentState):
     print("--- 🤖 NODE: AGENT ---")
@@ -306,7 +320,8 @@ def agent_node(state: AgentState):
     print(f'messages: size: {len(messages)} --> {messages}')
     last_user_content = _get_last_user_message_content(messages)
     latest_message_type = _get_latest_message_type(messages)
-    use_reasoning_mode = True # latest_message_type == "tool" and _should_use_reasoning_mode(messages)
+    current_model = get_setting("model_name", "llama3.1")
+    use_reasoning_mode = _should_use_reasoning_mode(messages)
     if latest_message_type == "human":
         print(
             "agent_node: new query received | "
@@ -319,10 +334,6 @@ def agent_node(state: AgentState):
             f"latest_message_type={latest_message_type} | "
             f"thinking_mode={use_reasoning_mode}"
         )
-    # 1. Retrieve LLM based on UserSettings
-    current_model = get_setting("model_name", "llama3.1")
-    llm_instance = get_cached_llm(current_model, with_tools=True, thinking_mode=use_reasoning_mode)
-        
     # --- FOCUS MODE CHECK ---
     # NOW: Read from state, not session
     print(f'agent_node: focused_file: {state.get("focused_file")}')
@@ -362,8 +373,8 @@ def agent_node(state: AgentState):
         )
         messages[0] = SystemMessage(content=messages[0].content + concise_instruction)
     
-    # 2. Invoke the LLM
-    response = llm_instance.invoke(messages)
+    # 2. First pass: decide whether a tool is needed, without streaming.
+    response = _invoke_tool_decision(messages, current_model, use_reasoning_mode)
     print(f'llm response: {response}')
 
     # --- 🛡️ QUERY ENRICHMENT LOGIC ---
@@ -441,6 +452,11 @@ def agent_node(state: AgentState):
                 
              except Exception as e:
                 print(f"   ❌ RESCUE FAILED: {e}")
+
+    if not response.tool_calls:
+        print("agent_node: no tool call requested; regenerating final answer with streaming enabled")
+        response = _invoke_final_answer(messages, current_model, use_reasoning_mode)
+        print(f'agent_node: streamed final response: {response}')
 
     if not response.tool_calls and response.content:
         if _contains_think_block(response.content):

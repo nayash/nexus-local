@@ -577,7 +577,6 @@ class ChatView(ft.Container):
                                             code_theme="atom-one-dark"
                                         )
                                     ],
-                                    initially_expanded=False,
                                     bgcolor=ft.Colors.TRANSPARENT,
                                     collapsed_bgcolor=ft.Colors.TRANSPARENT,
                                     text_color=ColorPalette.TEXT_SECONDARY,

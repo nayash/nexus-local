@@ -1,10 +1,64 @@
-import asyncio
 from langchain_core.messages import HumanMessage, AIMessage
 from src.agents.graph import build_graph
 
 
 # Global cache for the compiled graph
 _cached_graph = None
+
+
+def _format_message_for_ui(content: str = "", additional_kwargs: dict | None = None) -> str:
+    text_content = content or ""
+    metadata = additional_kwargs or {}
+    reasoning_content = (metadata.get("reasoning_content") or "").strip()
+
+    if not reasoning_content:
+        return text_content
+
+    if "<think" in text_content.lower():
+        return text_content
+
+    wrapped_reasoning = f"<think>{reasoning_content}</think>"
+    if text_content.strip():
+        return f"{wrapped_reasoning}\n\n{text_content}"
+    return wrapped_reasoning
+
+
+def _create_llm_buffer() -> dict:
+    return {
+        "saw_stream": False,
+        "reasoning_open": False,
+    }
+
+
+def _consume_stream_chunk(buffer_state: dict, chunk) -> list[str]:
+    emitted_parts = []
+    additional_kwargs = getattr(chunk, "additional_kwargs", {}) or {}
+    reasoning_chunk = (additional_kwargs.get("reasoning_content") or "")
+    content_chunk = getattr(chunk, "content", "") or ""
+
+    if reasoning_chunk:
+        if not buffer_state["reasoning_open"]:
+            emitted_parts.append("<think>")
+            buffer_state["reasoning_open"] = True
+        emitted_parts.append(reasoning_chunk)
+
+    if content_chunk:
+        if buffer_state["reasoning_open"]:
+            emitted_parts.append("</think>\n\n")
+            buffer_state["reasoning_open"] = False
+        emitted_parts.append(content_chunk)
+
+    if emitted_parts:
+        buffer_state["saw_stream"] = True
+
+    return emitted_parts
+
+
+def _close_open_reasoning_block(buffer_state: dict) -> str:
+    if buffer_state["reasoning_open"]:
+        buffer_state["reasoning_open"] = False
+        return "</think>"
+    return ""
 
 def get_graph():
     global _cached_graph
@@ -56,23 +110,12 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
     print(f"--- 🚀 LAUNCHING AGENT with query: {query} ---")
     
     # 3. Stream Events
-    #
-    # ROOT CAUSE / KEY FIX:
-    # Ollama does NOT populate `tool_call_chunks` on streaming AIMessageChunks.
-    # When qwen3 (or any Ollama model) decides to call a tool, it streams the
-    # tool-call JSON as plain TEXT content chunks — there is no way to distinguish
-    # them from a real text response mid-stream.  Only after the stream ends does
-    # Ollama set `tool_calls` on the final AIMessage.
-    #
-    # Fix: buffer all streamed chunks per LLM invocation (keyed by run_id).
-    # On `on_chat_model_end`, inspect the final output:
-    #   - output has tool_calls  →  discard buffer (JSON must not reach the UI)
-    #   - output has no tool_calls  →  yield the buffer (it is the real answer)
-    #
-    # Trade-off: the final answer is shown all-at-once instead of token-by-token.
-    # This is acceptable because the tool-execution wait already gives visible progress.
-
-    llm_buffers: dict = {}  # run_id -> list[str]
+    # The agent now uses a non-streaming tool-decision pass, then a streaming
+    # final-answer pass. That means any agent-node stream chunks are safe to send
+    # to the UI immediately, while non-stream invocations still need an end-of-run
+    # fallback.
+    llm_buffers: dict = {}  # run_id -> structured stream state
+    pending_nonstream_output = None
 
     async for event in graph.astream_events(inputs, version="v2"):
         kind = event["event"]
@@ -86,25 +129,37 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
         langgraph_node = event.get("metadata", {}).get("langgraph_node")
 
         if kind == "on_chat_model_start" and langgraph_node == "agent":
-            llm_buffers[run_id] = []
+            pending_nonstream_output = None
+            llm_buffers[run_id] = _create_llm_buffer()
 
         elif kind == "on_chat_model_stream" and langgraph_node == "agent":
             data = event.get("data", {})
             chunk = data.get("chunk")
-            if chunk and hasattr(chunk, "content") and chunk.content:
-                llm_buffers.setdefault(run_id, []).append(chunk.content)
+            if chunk:
+                pending_nonstream_output = None
+                buffer_state = llm_buffers.setdefault(run_id, _create_llm_buffer())
+                for emitted_text in _consume_stream_chunk(buffer_state, chunk):
+                    yield emitted_text
 
         elif kind == "on_chat_model_end" and langgraph_node == "agent":
             data = event.get("data", {})
             output = data.get("output")
-            buffered = llm_buffers.pop(run_id, [])
+            buffer_state = llm_buffers.pop(run_id, _create_llm_buffer())
 
             # Also skip if this agent LLM invocation was just making a tool call
             has_tool_call = bool(output and getattr(output, "tool_calls", None))
 
-            if not has_tool_call and buffered:
-                for text_chunk in buffered:
-                    yield text_chunk
+            if not has_tool_call:
+                if buffer_state["saw_stream"]:
+                    closing_text = _close_open_reasoning_block(buffer_state)
+                    if closing_text:
+                        yield closing_text
+                else:
+                    final_content = getattr(output, "content", "") if output else ""
+                    final_kwargs = getattr(output, "additional_kwargs", {}) if output else {}
+                    rendered = _format_message_for_ui(final_content, final_kwargs)
+                    if rendered:
+                        pending_nonstream_output = rendered
 
         elif kind == "on_tool_end":
             # Capture sources from tool output
@@ -147,6 +202,9 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
                             context["sources"].append(item)
                             
     # Final step: append visual artifacts and source citations
+    if pending_nonstream_output:
+        yield pending_nonstream_output
+
     if context.get("visual_artifacts"):
         yield "\n\n"
         for item in context["visual_artifacts"]:
