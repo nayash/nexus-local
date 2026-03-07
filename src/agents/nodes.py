@@ -123,6 +123,68 @@ _TEXT_TOOL_CALL_BLOCK_PATTERN = re.compile(
     r"<\|start_of_tool_call\|>\s*(.*?)\s*<\|end_of_tool_call\|>",
     re.DOTALL,
 )
+_CASUAL_GREETINGS = {
+    "hi",
+    "hello",
+    "hey",
+    "yo",
+    "thanks",
+    "thank you",
+    "ok",
+    "okay",
+    "cool",
+    "great",
+    "good morning",
+    "good afternoon",
+    "good evening",
+}
+_LOCAL_FALLBACK_PERSONAL_SIGNALS = (
+    " my ",
+    " i had ",
+    " i have ",
+    " i wrote ",
+    " i saved ",
+    " i created ",
+)
+_LOCAL_FALLBACK_DOCUMENT_SIGNALS = (
+    "note",
+    "notes",
+    "file",
+    "files",
+    "document",
+    "documents",
+    "doc",
+    "idea",
+    "ideas",
+    "project",
+    "nexus",
+)
+_LOCAL_FALLBACK_WEB_HINTS = (
+    "latest news",
+    "today news",
+    "weather",
+    "stock price",
+    "share price",
+    "market cap",
+    "breaking news",
+    "live score",
+    "current events",
+)
+_MISSING_CONTEXT_REFUSAL_PATTERNS = (
+    "i don't have access",
+    "i do not have access",
+    "i can't access",
+    "i cannot access",
+    "you haven't shared",
+    "you have not shared",
+    "please describe",
+    "could you describe",
+    "please provide",
+    "could you provide",
+)
+_RESPONSE_PHASE_DECISION = "decision"
+_RESPONSE_PHASE_FINAL = "final"
+_RESPONSE_PHASE_FINAL_RETRY = "final_retry"
 
 def _get_last_user_message_content(messages) -> str:
     for msg in reversed(messages):
@@ -146,6 +208,72 @@ def _collect_recent_tool_contents(messages, limit: int = 3) -> list[str]:
         if len(contents) >= limit:
             break
     return contents
+
+
+def _is_casual_message(text: str) -> bool:
+    normalized = " ".join((text or "").strip().lower().split())
+    if not normalized:
+        return False
+    if normalized in _CASUAL_GREETINGS:
+        return True
+    return len(normalized.split()) <= 3 and normalized.rstrip("!?.,") in _CASUAL_GREETINGS
+
+
+def _is_explicit_web_query(text: str) -> bool:
+    normalized = " ".join((text or "").strip().lower().split())
+    return any(hint in normalized for hint in _LOCAL_FALLBACK_WEB_HINTS)
+
+
+def _looks_like_specific_local_reference(text: str) -> bool:
+    raw = text or ""
+    if re.search(r"\b[\w\-. ]+\.(pdf|md|txt|csv|docx|xlsx|xls)\b", raw, re.IGNORECASE):
+        return True
+    if re.search(r"\[[^\]]{2,40}\]", raw):
+        return True
+    if re.search(r"\b[A-Z][a-z]+[A-Z][A-Za-z0-9]*\b", raw):
+        return True
+    if re.search(r"\b[0-9a-f]{16,}\b", raw.lower()):
+        return True
+    return False
+
+
+def _has_recent_local_context(messages, limit: int = 6) -> bool:
+    seen = 0
+    for msg in reversed(messages):
+        if getattr(msg, "type", None) != "ai":
+            continue
+        content = str(getattr(msg, "content", "") or "").lower()
+        if any(
+            marker in content
+            for marker in ("local file (", "/ingested_docs/", "matched file:", "matching idea file(s)")
+        ):
+            return True
+        seen += 1
+        if seen >= limit:
+            break
+    return False
+
+
+def _should_force_local_search_fallback(messages, last_user_content: str) -> bool:
+    normalized = " " + " ".join((last_user_content or "").strip().lower().split()) + " "
+    if not normalized.strip():
+        return False
+    if _is_casual_message(normalized):
+        return False
+    if _is_explicit_web_query(normalized):
+        return False
+
+    has_personal_signal = any(signal in normalized for signal in _LOCAL_FALLBACK_PERSONAL_SIGNALS)
+    has_document_signal = any(signal in normalized for signal in _LOCAL_FALLBACK_DOCUMENT_SIGNALS)
+    has_specific_reference = _looks_like_specific_local_reference(last_user_content)
+    has_coreference = any(token in normalized for token in (" this ", " that ", " it ", " these ", " those "))
+    has_local_history = _has_recent_local_context(messages)
+
+    if has_personal_signal and (has_document_signal or has_specific_reference):
+        return True
+    if has_local_history and (has_document_signal or has_specific_reference or has_coreference):
+        return True
+    return False
 
 
 def _is_short_factual_question(text: str) -> bool:
@@ -189,6 +317,70 @@ def _strip_reasoning_artifacts(content: str) -> str:
     cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL)
     cleaned = re.sub(r"^[^\w\"'(*\[]+\s*", "", cleaned)
     return cleaned.strip()
+
+
+def _extract_visible_text_from_think_markup(content: str) -> tuple[str, bool, bool]:
+    """
+    Returns (visible_text, had_think_markup, malformed_markup).
+    - Removes all well-formed <think>...</think> blocks.
+    - If a <think> block is unclosed, drops everything after it.
+    - If stray </think> appears, drops only that closing tag.
+    """
+    text = (content or "")
+    if not text:
+        return "", False, False
+
+    lower = text.lower()
+    out_parts = []
+    cursor = 0
+    had_think_markup = False
+    malformed_markup = False
+    close_tag = "</think>"
+
+    while cursor < len(text):
+        open_idx = lower.find("<think", cursor)
+        close_idx = lower.find(close_tag, cursor)
+
+        if open_idx == -1 and close_idx == -1:
+            out_parts.append(text[cursor:])
+            break
+
+        if close_idx != -1 and (open_idx == -1 or close_idx < open_idx):
+            malformed_markup = True
+            out_parts.append(text[cursor:close_idx])
+            cursor = close_idx + len(close_tag)
+            continue
+
+        had_think_markup = True
+        out_parts.append(text[cursor:open_idx])
+        open_end = lower.find(">", open_idx)
+        if open_end == -1:
+            malformed_markup = True
+            break
+
+        close_after_open = lower.find(close_tag, open_end + 1)
+        if close_after_open == -1:
+            malformed_markup = True
+            break
+
+        cursor = close_after_open + len(close_tag)
+
+    visible = "".join(out_parts)
+    visible = re.sub(r"\n{3,}", "\n\n", visible).strip()
+    return visible, had_think_markup, malformed_markup
+
+
+def _clean_visible_response_text(content: str) -> tuple[str, bool]:
+    """
+    Returns (cleaned_visible_text, had_think_markup).
+    Also strips small leading punctuation artifacts.
+    """
+    visible, had_think_markup, _ = _extract_visible_text_from_think_markup(content)
+    if not visible:
+        return "", had_think_markup
+
+    cleaned = re.sub(r"^[^\w\"'(*\[]+\s*", "", visible).strip()
+    return cleaned, had_think_markup
 
 
 def _contains_think_block(content: str) -> bool:
@@ -347,6 +539,41 @@ def _rewrite_tabular_focus_tool_calls(response, focused_file: str, last_user_con
         }
 
 
+def _inject_forced_tool_call(response, messages, last_user_content: str, focused_file: str | None) -> bool:
+    if getattr(response, "tool_calls", None) or not last_user_content:
+        return False
+    if _get_latest_message_type(messages) != "human":
+        return False
+
+    tool_name = None
+    args = {}
+
+    if focused_file:
+        if focused_file.lower().endswith((".csv", ".tsv", ".xlsx", ".xls")):
+            tool_name = "analyze_tabular_file_tool"
+            args = {"file_path": focused_file, "user_query": last_user_content}
+        else:
+            tool_name = "local_search_tool"
+            args = {"query": last_user_content, "file_filter": focused_file}
+    elif _should_force_local_search_fallback(messages, last_user_content):
+        tool_name = "local_search_tool"
+        args = {"query": last_user_content, "file_filter": ""}
+
+    if not tool_name:
+        return False
+
+    print(f"   🛡️ FORCING TOOL CALL FALLBACK: {tool_name}")
+    response.tool_calls = [
+        ToolCall(
+            name=tool_name,
+            args=args,
+            id="call_force_" + str(hash(f"{tool_name}:{json.dumps(args, sort_keys=True, default=str)}")),
+        )
+    ]
+    response.content = ""
+    return True
+
+
 def _should_use_reasoning_mode(messages) -> bool:
     last_user_content = _get_last_user_message_content(messages)
     latest_type = _get_latest_message_type(messages)
@@ -449,7 +676,15 @@ def get_cached_llm(model_name: str, with_tools: bool = True, thinking_mode: bool
     return _llm_cache[cache_key]
 
 
-def _invoke_tool_decision(messages, model_name: str, use_reasoning_mode: bool):
+def _build_phase_config(phase: str) -> dict:
+    normalized = (phase or "").strip().lower()
+    return {
+        "metadata": {"nexus_phase": normalized},
+        "tags": [f"nexus_phase:{normalized}"],
+    }
+
+
+def _invoke_tool_decision(messages, model_name: str, use_reasoning_mode: bool, response_phase: str):
     llm_instance = get_cached_llm(
         model_name,
         with_tools=True,
@@ -457,17 +692,80 @@ def _invoke_tool_decision(messages, model_name: str, use_reasoning_mode: bool):
     )
     # Tool-decision turns should not stream. Some Ollama backends emit malformed
     # streamed chunks for tool-call responses, so force a single JSON response.
-    return llm_instance.invoke(messages, stream=False)
+    return llm_instance.invoke(
+        messages,
+        stream=False,
+        config=_build_phase_config(response_phase),
+    )
 
 
-def _invoke_final_answer(messages, model_name: str, use_reasoning_mode: bool):
+def _invoke_final_answer(messages, model_name: str, use_reasoning_mode: bool, response_phase: str):
     llm_instance = get_cached_llm(
         model_name,
         with_tools=False,
         thinking_mode=use_reasoning_mode,
     )
     # Final user-facing answers should stream to the UI.
-    return llm_instance.invoke(messages)
+    return llm_instance.invoke(messages, config=_build_phase_config(response_phase))
+
+
+def _invoke_final_answer_without_think(messages, model_name: str, response_phase: str = _RESPONSE_PHASE_FINAL_RETRY):
+    """
+    One-shot recovery path for malformed think-tag outputs:
+    force final answer mode without reasoning tags.
+    """
+    llm_instance = get_cached_llm(
+        model_name,
+        with_tools=False,
+        thinking_mode=False,
+    )
+    retry_messages = messages + [
+        SystemMessage(
+            content=(
+                "Retry this answer and output final user-facing answer text only. "
+                "Do not include <think> tags or internal reasoning."
+            )
+        )
+    ]
+    return llm_instance.invoke(retry_messages, config=_build_phase_config(response_phase))
+
+
+def _should_regenerate_final_answer(latest_message_type: str, response) -> bool:
+    """
+    Keep the extra final-answer call only when needed.
+    If we are already in a tool follow-up turn and have a valid text answer,
+    reuse it directly to avoid unnecessary latency.
+    """
+    if getattr(response, "tool_calls", None):
+        return False
+
+    content = (getattr(response, "content", "") or "").strip()
+    if latest_message_type != "human" and content:
+        lowered = content.lower()
+        if any(pattern in lowered for pattern in _MISSING_CONTEXT_REFUSAL_PATTERNS):
+            return True
+        return False
+
+    return True
+
+
+def _summarize_tool_calls(tool_calls) -> list[dict]:
+    summary = []
+    for call in tool_calls or []:
+        args = call.get("args", {}) if isinstance(call, dict) else {}
+        compact_args = {}
+        for key, value in (args or {}).items():
+            value_text = str(value)
+            if len(value_text) > 140:
+                value_text = value_text[:137] + "..."
+            compact_args[key] = value_text
+        summary.append(
+            {
+                "name": call.get("name") if isinstance(call, dict) else str(call),
+                "args": compact_args,
+            }
+        )
+    return summary
 
 def agent_node(state: AgentState):
     print("--- 🤖 NODE: AGENT ---")
@@ -476,7 +774,7 @@ def agent_node(state: AgentState):
     trimmed_history = trim_messages(state["messages"], max_messages=12)
     
     messages = [SystemMessage(content=SYSTEM_PROMPT)] + trimmed_history
-    print(f'messages: size: {len(messages)} --> {messages}')
+    print(f"agent_node: prompt_messages={len(messages)}")
     last_user_content = _get_last_user_message_content(messages)
     latest_message_type = _get_latest_message_type(messages)
     current_model = get_setting("model_name", "llama3.1")
@@ -544,8 +842,19 @@ def agent_node(state: AgentState):
         messages[0] = SystemMessage(content=messages[0].content + grounding_instruction)
     
     # 2. First pass: decide whether a tool is needed, without streaming.
-    response = _invoke_tool_decision(messages, current_model, use_reasoning_mode)
-    print(f'llm response: {response}')
+    decision_phase = _RESPONSE_PHASE_DECISION if latest_message_type == "human" else _RESPONSE_PHASE_FINAL
+    response = _invoke_tool_decision(
+        messages,
+        current_model,
+        use_reasoning_mode,
+        response_phase=decision_phase,
+    )
+    decision_has_content = bool((getattr(response, "content", "") or "").strip())
+    print(
+        "agent_node: decision pass complete | "
+        f"tool_calls={len(getattr(response, 'tool_calls', []) or [])} | "
+        f"has_content={decision_has_content}"
+    )
 
     # Rescue text-form tool calls before deciding whether to fall back to the
     # final-answer pass. qwen models often emit textual tool syntax instead of
@@ -555,18 +864,59 @@ def agent_node(state: AgentState):
     # Normalize tool arguments after any native or rescued tool call.
     _enrich_local_search_tool_calls(response, last_user_content)
     _rewrite_tabular_focus_tool_calls(response, focused_file, last_user_content)
+    _inject_forced_tool_call(response, messages, last_user_content, focused_file)
+    if response.tool_calls:
+        print(f"agent_node: tool plan -> {_summarize_tool_calls(response.tool_calls)}")
+    else:
+        print("agent_node: tool plan -> no tool call")
 
-    if not response.tool_calls:
+    if _should_regenerate_final_answer(latest_message_type, response):
         print("agent_node: no tool call requested; regenerating final answer with streaming enabled")
-        response = _invoke_final_answer(messages, current_model, use_reasoning_mode)
-        print(f'agent_node: streamed final response: {response}')
+        response = _invoke_final_answer(
+            messages,
+            current_model,
+            use_reasoning_mode,
+            response_phase=_RESPONSE_PHASE_FINAL,
+        )
+        print(
+            "agent_node: final answer generated | "
+            f"tool_calls={len(getattr(response, 'tool_calls', []) or [])} | "
+            f"chars={len((getattr(response, 'content', '') or ''))}"
+        )
+    elif not response.tool_calls:
+        print("agent_node: using decision-pass final answer from tool follow-up turn")
 
     if not response.tool_calls and response.content:
-        if _contains_think_block(response.content):
-            print("agent_node: preserving <think> block in assistant response")
+        cleaned_content, had_think_markup = _clean_visible_response_text(response.content)
+
+        if cleaned_content:
+            response.content = cleaned_content
+        elif had_think_markup:
+            print("agent_node: empty visible answer after think cleanup; retrying without think mode")
+            recovery = _invoke_final_answer_without_think(
+                messages,
+                current_model,
+                response_phase=_RESPONSE_PHASE_FINAL_RETRY,
+            )
+            recovered_cleaned, _ = _clean_visible_response_text(getattr(recovery, "content", "") or "")
+            if recovered_cleaned:
+                response = recovery
+                response.content = recovered_cleaned
+            else:
+                response = recovery
+                fallback = (getattr(recovery, "content", "") or "").strip()
+                response.content = fallback or "I could not generate a clean final answer. Please try again."
         else:
-            cleaned_content = _strip_reasoning_artifacts(response.content)
-            if cleaned_content != response.content:
-                response.content = cleaned_content
+            fallback_clean = _strip_reasoning_artifacts(response.content)
+            if fallback_clean:
+                response.content = fallback_clean
+
+    if not response.tool_calls:
+        final_text = (getattr(response, "content", "") or "").strip()
+        preview = final_text.replace("\n", " ")[:180]
+        print(
+            "agent_node: final response ready | "
+            f"chars={len(final_text)} | preview='{preview}'"
+        )
 
     return {"messages": [response]}

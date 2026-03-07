@@ -1,6 +1,7 @@
 import asyncio
 import os
 import base64
+import re
 import flet as ft
 from styles import ColorPalette, TextStyles
 from src.core.config import Config
@@ -30,6 +31,56 @@ class ChatView(ft.Container):
         self._processing_chat_id = None
         self._streaming_bot_message_control = None
         self._streaming_response_buffer = ""
+
+    @staticmethod
+    def _strip_think_content(text: str) -> str:
+        """
+        Remove reasoning-tag markup robustly for display/storage.
+        - Removes all well-formed <think>...</think> blocks.
+        - If <think> is unclosed, drops everything after it.
+        - If stray </think> appears, drops only that tag.
+        """
+        cleaned = text or ""
+        if not cleaned:
+            return ""
+
+        lower = cleaned.lower()
+        out_parts = []
+        cursor = 0
+        close_tag = "</think>"
+
+        while cursor < len(cleaned):
+            open_idx = lower.find("<think", cursor)
+            close_idx = lower.find(close_tag, cursor)
+
+            if open_idx == -1 and close_idx == -1:
+                out_parts.append(cleaned[cursor:])
+                break
+
+            if close_idx != -1 and (open_idx == -1 or close_idx < open_idx):
+                out_parts.append(cleaned[cursor:close_idx])
+                cursor = close_idx + len(close_tag)
+                continue
+
+            out_parts.append(cleaned[cursor:open_idx])
+            open_end = lower.find(">", open_idx)
+            if open_end == -1:
+                break
+
+            close_after_open = lower.find(close_tag, open_end + 1)
+            if close_after_open == -1:
+                break
+
+            cursor = close_after_open + len(close_tag)
+
+        cleaned = "".join(out_parts)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
+
+    @staticmethod
+    def _clean_assistant_text_for_storage(text: str) -> str:
+        """Persist only final user-visible answer text (no reasoning tags)."""
+        return ChatView._strip_think_content(text)
 
     def build_content(self):
         # File Viewer Dialog
@@ -414,8 +465,10 @@ class ChatView(ft.Container):
         try:
             # Prepare context (include focused_file if available in page.data)
             print(f'chat_view: focused_file: {self.app_page.data.get("focused_file")}')
+            previous_reasoning = self.repo.get_last_assistant_reasoning(origin_chat_id)
             context = {
-                "focused_file": self.app_page.data.get("focused_file")
+                "focused_file": self.app_page.data.get("focused_file"),
+                "last_assistant_reasoning": previous_reasoning or "",
             }
             
             # Fetch limited history for context (Sliding Window: last 20 messages)
@@ -436,7 +489,13 @@ class ChatView(ft.Container):
                     self._safe_update_chat_history()
             
             # --- Persistence of Bot Response ---
-            self.repo.add_message(origin_chat_id, "assistant", full_response)
+            cleaned_response = self._clean_assistant_text_for_storage(full_response)
+            self.repo.add_message(
+                origin_chat_id,
+                "assistant",
+                cleaned_response or full_response,
+                reasoning_content=(context.get("last_turn_reasoning") or ""),
+            )
                 
         except Exception as ex:
             import traceback
@@ -530,6 +589,15 @@ class ChatView(ft.Container):
                 text = str(text)
             text = normalize_think_tags(text)
 
+            # Guardrail: malformed or repeated think tags should never leak into
+            # visible answer text.
+            think_open_count = len(re.findall(r"<think\b[^>]*>", text, flags=re.IGNORECASE))
+            think_close_count = len(re.findall(r"</think>", text, flags=re.IGNORECASE))
+            if think_open_count > 1 or think_close_count > 1 or (think_open_count != think_close_count):
+                sanitized = self._strip_think_content(text)
+                append_rich_content(controls, sanitized)
+                return ft.Column(controls=controls, spacing=5, tight=True)
+
             # Strip wrapping code fences that some models accidentally add
             # e.g. ```\nThe answer is...\n``` → The answer is...
             stripped = text.strip()
@@ -592,32 +660,9 @@ class ChatView(ft.Container):
                     if post_text:
                          append_rich_content(controls, post_text)
                 else:
-                    # Open thought (Streaming in progress)
-                    thought_text = remainder.strip()
-                    if thought_text:
-                         controls.append(
-                            ft.Container(
-                                content=ft.ExpansionTile(
-                                    title=ft.Text("Thinking...", size=12, italic=True, color=ColorPalette.ACCENT),
-                                    controls=[
-                                        ft.Markdown(
-                                            thought_text + " █", # Cursor effect
-                                            selectable=True,
-                                            extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-                                            code_theme="atom-one-dark"
-                                        )
-                                    ],
-                                    # initially_expanded=True, # Auto-expand while thinking
-                                    bgcolor=ft.Colors.TRANSPARENT,
-                                    collapsed_bgcolor=ft.Colors.TRANSPARENT,
-                                    text_color=ColorPalette.ACCENT,
-                                    controls_padding=ft.padding.only(left=10, bottom=10),
-                                ),
-                                border=ft.border.all(1, ColorPalette.ACCENT), 
-                                border_radius=10,
-                                margin=ft.margin.only(top=5, bottom=5)
-                            )
-                        )
+                    # Broken/unclosed think block: keep only pre-think content.
+                    # Never render in-progress reasoning text in the main answer.
+                    pass
             
             else:
                 # No think block, just regular markdown
