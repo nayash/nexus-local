@@ -2,6 +2,7 @@ import re
 
 from langchain_core.messages import HumanMessage, AIMessage
 from src.agents.graph import build_graph
+from src.tools.tool_results import extract_artifacts, find_final_response_artifact
 
 
 # Global cache for the compiled graph
@@ -202,31 +203,19 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
         elif kind == "on_tool_end":
             # Capture sources from tool output
             data = event.get("data", {})
-            artifact = data.get("artifact")
             output = data.get("output")
             
             print(f"DEBUG TOOL END: Event keys: {data.keys()}")
-            print(f"DEBUG TOOL END: Artifact present: {artifact is not None}")
             print(f"DEBUG TOOL END: Output type: {type(output)}")
 
-            metadata = []
-            
-            # 1. Direct artifact in event data
-            if artifact and isinstance(artifact, list):
-                print("DEBUG TOOL END: Found artifact in event data")
-                metadata = artifact
-                
-            # 2. Artifact inside ToolMessage object
-            elif hasattr(output, 'artifact') and output.artifact and isinstance(output.artifact, list):
-                print("DEBUG TOOL END: Found artifact in ToolMessage object")
-                metadata = output.artifact
-                
-            # 3. Legacy Tuple (content, metadata)
-            elif isinstance(output, (list, tuple)) and len(output) == 2 and isinstance(output[1], list):
-                print("DEBUG TOOL END: Found legacy tuple sources")
-                _, metadata = output
-            
+            metadata = extract_artifacts(data.get("artifact")) or extract_artifacts(output)
+            print(f"DEBUG TOOL END: Artifact count: {len(metadata)}")
+
             if metadata:
+                final_response = find_final_response_artifact(metadata)
+                if final_response is not None:
+                    pending_nonstream_output = final_response
+
                 for item in metadata:
                     if not isinstance(item, dict):
                         continue
@@ -235,6 +224,8 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
                     if item_type == "plot":
                         if item not in context["visual_artifacts"]:
                             context["visual_artifacts"].append(item)
+                    elif item_type == "final_response":
+                        continue
                     else:
                         if item not in context["sources"]:
                             context["sources"].append(item)

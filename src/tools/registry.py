@@ -1,7 +1,7 @@
 from langchain_core.tools import tool
 from datetime import datetime
 from src.tools.search import search_web
-from src.tools.local import search_local
+from src.tools.local import resolve_direct_local_response, search_local
 from src.tools.tabular import (
     load_tabular_dataframe,
     generate_tabular_analysis_code,
@@ -69,6 +69,10 @@ def local_search_tool(query: str, file_filter: str = ""):
     """
     normalized_file_filter = (file_filter or "").strip() or None
     print(f'calling search_local with query: {query} and file_filter: {normalized_file_filter}')
+    terminal_result = resolve_direct_local_response(query, normalized_file_filter or "")
+    if terminal_result is not None:
+        return terminal_result
+
     results = search_local(query, normalized_file_filter)
     
     # Increase context budget for focused search to 15,000 chars

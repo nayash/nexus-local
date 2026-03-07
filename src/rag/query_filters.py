@@ -5,7 +5,12 @@ from functools import lru_cache
 from typing import Optional, Tuple
 
 from langchain_classic.chains.query_constructor.base import AttributeInfo, load_query_constructor_runnable
-from langchain_core.structured_query import Comparator, Comparison, Operation, Operator
+from langchain_core.structured_query import (
+    Comparator,
+    Comparison,
+    Operation,
+    Operator,
+)
 from langchain_ollama import ChatOllama
 
 from src.core.config import Config
@@ -13,7 +18,10 @@ from src.core.user_settings import get_setting
 from src.rag.translators import LanceDBTranslator
 
 
-_FILENAME_PATTERN = re.compile(r"\b([\w\-. ]+\.(pdf|txt|md|csv|sh|py|docx|html|htm|jpg|jpeg|png|log))\b", re.IGNORECASE)
+_FILENAME_PATTERN = re.compile(
+    r"\b([\w\-. ]+\.(pdf|txt|md|csv|sh|py|docx|html|htm|jpg|jpeg|png|log))\b",
+    re.IGNORECASE,
+)
 
 
 def _today() -> date:
@@ -79,6 +87,20 @@ def _get_query_constructor():
                 "filter": "eq('file_name', 'error_report.log')",
             },
         ),
+        (
+            'look for the file with name containing "nexus" and "logs" in the documents table',
+            {
+                "query": "file",
+                "filter": "and(like('file_name', '%nexus%'), like('file_name', '%logs%'))",
+            },
+        ),
+        (
+            "extract full content of nexus-local-logs-debug.txt",
+            {
+                "query": "full content",
+                "filter": "eq('file_name', 'nexus-local-logs-debug.txt')",
+            },
+        ),
     ]
     return load_query_constructor_runnable(
         llm=_get_filter_llm(),
@@ -132,7 +154,17 @@ def _fallback_structured_filter(query: str):
     return Operation(operator=Operator.AND, arguments=filters)
 
 
-def compile_multimodal_filter(query: str, file_filter: Optional[str] = None, workspace_id: Optional[str] = None) -> Tuple[str, Optional[str]]:
+class _FallbackStructuredQuery:
+    def __init__(self, query: str):
+        self.query = query
+        self.filter = None
+
+
+def build_multimodal_structured_query(
+    query: str,
+    file_filter: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+) -> tuple[object, str, Optional[str]]:
     normalized_query = _normalize_relative_dates(query)
     structured_query = None
     try:
@@ -141,10 +173,7 @@ def compile_multimodal_filter(query: str, file_filter: Optional[str] = None, wor
         print(f"⚠️ Self-query constructor failed, using fallback metadata parsing: {exc}")
 
     if structured_query is None:
-        class _Structured:
-            query = normalized_query
-            filter = None
-        structured_query = _Structured()
+        structured_query = _FallbackStructuredQuery(normalized_query)
 
     if not getattr(structured_query, "filter", None):
         structured_query.filter = _fallback_structured_filter(normalized_query)
@@ -170,9 +199,27 @@ def compile_multimodal_filter(query: str, file_filter: Optional[str] = None, wor
     base_filter = getattr(structured_query, "filter", None)
     all_filters = [item for item in ([base_filter] + extra_filters) if item is not None]
     if not all_filters:
-        return structured_query.query or normalized_query, None
+        text_query = structured_query.query or normalized_query
+        print(f"self-query resolved | text_query={text_query!r} | sql_filter=None")
+        return structured_query, text_query, None
 
     final_filter = all_filters[0] if len(all_filters) == 1 else Operation(operator=Operator.AND, arguments=all_filters)
     structured_query.filter = final_filter
     text_query, kwargs = LanceDBTranslator().visit_structured_query(structured_query)
-    return text_query or normalized_query, kwargs.get("filter")
+    resolved_query = text_query or normalized_query
+    resolved_filter = kwargs.get("filter")
+    print(f"self-query resolved | text_query={resolved_query!r} | sql_filter={resolved_filter!r}")
+    return structured_query, resolved_query, resolved_filter
+
+
+def compile_multimodal_filter(
+    query: str,
+    file_filter: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+) -> Tuple[str, Optional[str]]:
+    _, text_query, sql_filter = build_multimodal_structured_query(
+        query,
+        file_filter=file_filter,
+        workspace_id=workspace_id,
+    )
+    return text_query, sql_filter

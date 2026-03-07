@@ -6,6 +6,7 @@ from src.agents.state import AgentState
 from src.agents.nodes import agent_node
 from src.agents.router import route_question
 from src.tools.registry import TOOLS
+from src.tools.tool_results import extract_final_response
 
 # def build_graph_old():
 #     """
@@ -40,6 +41,14 @@ from src.tools.registry import TOOLS
     
 #     return workflow.compile()
 
+def route_after_tools(state: AgentState):
+    messages = state.get("messages") or []
+    latest = messages[-1] if messages else None
+    if extract_final_response(latest) is not None:
+        return END
+    return "agent"
+
+
 def build_graph():
     workflow = StateGraph(AgentState)
     
@@ -62,7 +71,11 @@ def build_graph():
         tools_condition,
     )
     
-    # After Tools run, ALWAYS go back to Agent to interpret the results
-    workflow.add_edge("tools", "agent")
+    # After Tools run, either terminate with the tool-produced final response
+    # or loop back to the agent for interpretation.
+    workflow.add_conditional_edges(
+        "tools",
+        route_after_tools,
+    )
     
     return workflow.compile()
