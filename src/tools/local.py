@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from typing import List, Optional
@@ -49,25 +50,44 @@ _RELEVANCE_STOPWORDS = {
     "about",
 }
 _NOTE_INTENT_TERMS = {"note", "notes", "writing", "story", "tips", "idea", "ideas"}
+_EXISTENCE_QUERY_HINTS = (
+    "do i have",
+    "did i have",
+    "is there",
+    "are there",
+    "which",
+    "list",
+    "any",
+)
 
 
 def _normalize_whitespace(value: str) -> str:
     return " ".join((value or "").split())
 
 
+def _normalize_for_match(value: str) -> str:
+    lowered = (value or "").lower()
+    cleaned = re.sub(r"[^a-z0-9]+", " ", lowered)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def _query_terms(query: str) -> set[str]:
     terms = set()
-    for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9_\-]{1,}", (query or "").lower()):
+    normalized_query = _normalize_for_match(query)
+    for token in normalized_query.split():
         if len(token) < 3 or token in _RELEVANCE_STOPWORDS:
             continue
         terms.add(token)
+        # Small plural normalization improves lexical recall (idea <-> ideas).
+        if token.endswith("s") and len(token) > 4:
+            terms.add(token[:-1])
     return terms
 
 
 def _text_relevance_overlap_score(query_terms: set[str], text_blob: str) -> float:
     if not query_terms:
         return 0.0
-    lowered_blob = (text_blob or "").lower()
+    lowered_blob = _normalize_for_match(text_blob or "")
     matched = sum(1 for term in query_terms if term in lowered_blob)
     return matched / max(len(query_terms), 1)
 
@@ -77,8 +97,8 @@ def _intent_source_bonus(row: dict, query_terms: set[str]) -> float:
         return 0.0
 
     source_type = str(row.get("source_type") or "").lower()
-    source_path = str(row.get("source_path") or "").lower()
-    file_name = str(row.get("file_name") or "").lower()
+    source_path = _normalize_for_match(str(row.get("source_path") or ""))
+    file_name = _normalize_for_match(str(row.get("file_name") or ""))
 
     bonus = 0.0
     if any(term in _NOTE_INTENT_TERMS for term in query_terms):
@@ -94,6 +114,91 @@ def _intent_source_bonus(row: dict, query_terms: set[str]) -> float:
         bonus += 0.20
 
     return bonus
+
+
+def _is_existence_or_list_query(query: str) -> bool:
+    normalized = _normalize_for_match(query)
+    has_hint = any(hint in normalized for hint in _EXISTENCE_QUERY_HINTS)
+    has_target = any(token in normalized for token in ("idea", "ideas", "game", "book", "file", "files", "note", "notes"))
+    return has_hint and has_target
+
+
+def _should_apply_lexical_supplement(query: str) -> bool:
+    if _is_existence_or_list_query(query):
+        return True
+    query_terms = _query_terms(query)
+    if not query_terms:
+        return False
+
+    text_lookup_terms = _NOTE_INTENT_TERMS | {"game", "games", "adventure", "story", "stories", "outline", "outlines"}
+    return bool(query_terms.intersection(text_lookup_terms))
+
+
+def _lexical_document_candidates(query: str, file_filter: str = "", limit: int = 50) -> list[dict]:
+    query_terms = _query_terms(query)
+    normalized_query = _normalize_for_match(query)
+    if not query_terms:
+        return []
+
+    normalized_file_filter = (file_filter or "").strip()
+    abs_filter = os.path.abspath(normalized_file_filter) if normalized_file_filter else None
+    candidates = []
+
+    for row in load_rows(Config.MULTIMODAL_DOCUMENTS_TABLE):
+        source_path = os.path.abspath(row.get("source_path") or "")
+        if not source_path:
+            continue
+        if abs_filter and source_path != abs_filter:
+            continue
+
+        haystack = " ".join(
+            [
+                str(row.get("file_name") or ""),
+                str(row.get("title") or ""),
+                source_path,
+            ]
+        )
+        overlap = _text_relevance_overlap_score(query_terms, haystack)
+        intent_bonus = _intent_source_bonus(row, query_terms)
+        phrase_bonus = 0.0
+        normalized_haystack = _normalize_for_match(haystack)
+        if "text based adventure" in normalized_query and "text based adventure" in normalized_haystack:
+            phrase_bonus += 0.8
+
+        score = overlap + intent_bonus + phrase_bonus
+        if score <= 0:
+            continue
+
+        candidate = dict(row)
+        candidate["source_path"] = source_path
+        candidate["_lexical_score"] = score
+        candidates.append(candidate)
+
+    candidates.sort(
+        key=lambda item: (
+            float(item.get("_lexical_score") or 0.0),
+            str(item.get("file_name") or "").lower(),
+        ),
+        reverse=True,
+    )
+    return candidates[:limit]
+
+
+def _merge_document_rows(primary_rows: list[dict], supplemental_rows: list[dict], limit: int = 100) -> list[dict]:
+    merged = []
+    seen_paths = set()
+
+    for row in list(primary_rows) + list(supplemental_rows):
+        source_path = os.path.abspath(row.get("source_path") or "")
+        if not source_path or source_path in seen_paths:
+            continue
+        normalized = dict(row)
+        normalized["source_path"] = source_path
+        merged.append(normalized)
+        seen_paths.add(source_path)
+        if len(merged) >= limit:
+            break
+    return merged
 
 
 def _rerank_and_filter_rows(rows: list[dict], query: str, top_k: int) -> list[dict]:
@@ -494,36 +599,98 @@ def _query_documents_table(query: str, file_filter: str = "") -> list[dict]:
         file_filter=normalized_file_filter,
     )
     filter_node = getattr(structured_query, "filter", None)
-    if filter_node is None:
-        return []
+    lexical_rows = _lexical_document_candidates(query, normalized_file_filter or "", limit=60)
 
     rows = []
-    for row in load_rows(Config.MULTIMODAL_DOCUMENTS_TABLE):
-        source_path = os.path.abspath(row.get("source_path") or "")
-        if not source_path:
-            continue
-        normalized_row = dict(row)
-        normalized_row["source_path"] = source_path
-        if _row_matches_filter(normalized_row, filter_node):
-            rows.append(normalized_row)
+    if filter_node is not None:
+        for row in load_rows(Config.MULTIMODAL_DOCUMENTS_TABLE):
+            source_path = os.path.abspath(row.get("source_path") or "")
+            if not source_path:
+                continue
+            normalized_row = dict(row)
+            normalized_row["source_path"] = source_path
+            if _row_matches_filter(normalized_row, filter_node):
+                rows.append(normalized_row)
 
-    deduped = {}
-    for row in rows:
-        deduped[row["source_path"]] = row
+    combined = _merge_document_rows(rows, lexical_rows, limit=100)
     return sorted(
-        deduped.values(),
+        combined,
         key=lambda item: (
+            float(item.get("_lexical_score") or 0.0),
             (item.get("file_name") or "").lower(),
             (item.get("source_path") or "").lower(),
         ),
+        reverse=True,
     )
+
+
+def _build_existence_listing_response(matches: list[dict], query: str) -> str:
+    if not matches:
+        return "No matching indexed files were found."
+
+    lines = [f"Yes, I found {len(matches)} matching idea file(s):"]
+    for row in matches[:30]:
+        label = row.get("title") or row.get("file_name") or os.path.basename(row.get("source_path") or "")
+        lines.append(f"- {label}")
+    if len(matches) > 30:
+        lines.append(f"... and {len(matches) - 30} more")
+    lines.append("")
+    lines.append(f"Matched for: {query}")
+    return "\n".join(lines)
+
+
+def _supplement_with_lexical_parent_rows(rows: list[dict], query: str, file_filter: str = "", limit: int = 10) -> list[dict]:
+    lexical_docs = _lexical_document_candidates(query, file_filter, limit=max(limit, 12))
+    if not lexical_docs:
+        return rows
+
+    existing_paths = {os.path.abspath(row.get("source_path") or "") for row in rows}
+    parent_rows = load_rows(Config.MULTIMODAL_PARENT_TABLE)
+    supplemental = []
+    for doc in lexical_docs:
+        source_path = os.path.abspath(doc.get("source_path") or "")
+        if not source_path or source_path in existing_paths:
+            continue
+
+        parent_candidates = [
+            row
+            for row in parent_rows
+            if os.path.abspath(row.get("source_path") or "") == source_path
+            and row.get("modality", "text") == "text"
+            and (row.get("text") or "").strip()
+        ]
+        if not parent_candidates:
+            continue
+
+        parent_candidates.sort(
+            key=lambda item: (
+                item.get("page") if isinstance(item.get("page"), int) else -1,
+                item.get("parent_index") if isinstance(item.get("parent_index"), int) else -1,
+            )
+        )
+        selected_parent = dict(parent_candidates[0])
+        extra = parse_extra(selected_parent.get("extra"))
+        if not extra.get("matched_text"):
+            extra["matched_text"] = (selected_parent.get("text") or "")[:260]
+        selected_parent["extra"] = json.dumps(extra, ensure_ascii=True)
+        selected_parent["_score"] = float(doc.get("_lexical_score") or 0.0)
+        supplemental.append(selected_parent)
+        existing_paths.add(source_path)
+        if len(supplemental) >= limit:
+            break
+
+    return list(rows) + supplemental
 
 
 def resolve_direct_local_response(
     query: str, file_filter: str = ""
 ) -> Optional[tuple[str, list[dict]]]:
     normalized_file_filter = (file_filter or "").strip()
+    is_existence_query = _is_existence_or_list_query(query)
     plan = _plan_local_retrieval(query, normalized_file_filter)
+    if is_existence_query:
+        # Existence/list queries should always use document metadata lookup.
+        plan = {"retrieval_mode": "document_lookup", "response_mode": "snippets"}
     if plan["retrieval_mode"] != "document_lookup":
         return None
 
@@ -531,6 +698,10 @@ def resolve_direct_local_response(
     wants_full_content = plan["response_mode"] == "full_document"
 
     metadata = _build_source_metadata(matches)
+
+    if is_existence_query:
+        listing = _build_existence_listing_response(matches, query)
+        return "", metadata + [build_final_response_artifact(listing)]
 
     if not matches:
         return (
@@ -620,7 +791,14 @@ def search_local(query: str, file_filter: str = "") -> List[SearchResult]:
 
 
 def _search_multimodal_results(query: str, file_filter: str = None, top_k: int = 10) -> List[SearchResult]:
-    rows = search_multimodal(query, top_k=top_k, file_filter=file_filter)
+    rows = search_multimodal(query, top_k=top_k, file_filter=file_filter) or []
+    if _should_apply_lexical_supplement(query):
+        rows = _supplement_with_lexical_parent_rows(
+            rows,
+            query=query,
+            file_filter=file_filter or "",
+            limit=min(max(top_k, 4), 12),
+        )
     if not rows:
         return []
     # Keep context focused by reranking and deduplicating per source file.

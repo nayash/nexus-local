@@ -1,8 +1,9 @@
 from langchain_core.structured_query import Comparator, Comparison, Operation, Operator
 
 from src.tools.local import _normalize_retrieval_plan, _row_matches_filter
-from src.tools.local import _rerank_and_filter_rows
+from src.tools.local import _rerank_and_filter_rows, _search_multimodal_results, _should_apply_lexical_supplement, resolve_direct_local_response
 from src.rag.query_filters import compile_multimodal_filter, compile_multimodal_filter_plan
+from src.tools.tool_results import extract_final_response
 
 
 def test_like_filter_matches_case_insensitive_filename():
@@ -98,3 +99,79 @@ def test_reranker_prioritizes_relevant_note_and_deduplicates_same_source():
     assert ranked
     assert ranked[0]["source_path"] == "/tmp/writing_tips.md"
     assert len({row["source_path"] for row in ranked}) == len(ranked)
+
+
+def test_existence_query_forces_document_lookup_even_when_planner_says_semantic(monkeypatch):
+    monkeypatch.setattr(
+        "src.tools.local._plan_local_retrieval",
+        lambda query, file_filter="": {"retrieval_mode": "semantic_search", "response_mode": "snippets"},
+    )
+    monkeypatch.setattr(
+        "src.tools.local._query_documents_table",
+        lambda query, file_filter="": [
+            {
+                "title": "Text Based Adventure - Abaddon Hotel",
+                "file_name": "abaddon.md",
+                "source_path": "/tmp/abaddon.md",
+                "source_type": "md",
+            }
+        ],
+    )
+
+    payload = resolve_direct_local_response("Did I have any text based adventure game idea?")
+    assert payload is not None
+    response = extract_final_response(payload)
+    assert response is not None
+    assert "Yes, I found 1 matching idea file(s):" in response
+    assert "Abaddon Hotel" in response
+
+
+def test_multimodal_search_supplements_lexical_parent_rows(monkeypatch):
+    semantic_rows = [
+        {
+            "source_path": "/tmp/other_note.md",
+            "source_type": "md",
+            "file_name": "other_note.md",
+            "title": "Other Note",
+            "text": "general productivity notes",
+            "extra": "{}",
+            "_score": 0.2,
+            "modality": "text",
+            "page": 1,
+            "parent_index": 1,
+        }
+    ]
+    lexical_docs = [
+        {
+            "source_path": "/tmp/abaddon.md",
+            "source_type": "md",
+            "file_name": "abaddon.md",
+            "title": "Text Based Adventure - Abaddon Hotel",
+            "_lexical_score": 1.4,
+        }
+    ]
+    parent_rows = [
+        {
+            "source_path": "/tmp/abaddon.md",
+            "source_type": "md",
+            "file_name": "abaddon.md",
+            "title": "Text Based Adventure - Abaddon Hotel",
+            "text": "Abaddon Hotel is a text based adventure game concept.",
+            "extra": "{}",
+            "modality": "text",
+            "page": 1,
+            "parent_index": 0,
+        }
+    ]
+
+    monkeypatch.setattr("src.tools.local.search_multimodal", lambda *args, **kwargs: semantic_rows)
+    monkeypatch.setattr("src.tools.local._lexical_document_candidates", lambda *args, **kwargs: lexical_docs)
+    monkeypatch.setattr("src.tools.local.load_rows", lambda table_name: parent_rows)
+
+    results = _search_multimodal_results("Did I have any text based adventure game idea?", top_k=5)
+    assert any(result.url == "/tmp/abaddon.md" for result in results)
+
+
+def test_lexical_supplement_intent_guard():
+    assert _should_apply_lexical_supplement("Did I have any text based adventure game idea?") is True
+    assert _should_apply_lexical_supplement("screenshot of the error message") is False
