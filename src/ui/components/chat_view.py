@@ -115,7 +115,7 @@ class ChatView(ft.Container):
         
         # Add some dummy messages if history is empty
         # self.add_message("Hello! I am Nexus. How can I help you today?", is_user=False)
-        self.add_message("Nexus is ready. Ask me anything.", is_user=False)
+        self.add_message("Nexus is ready. Ask me anything. I keep the answers useful and the jokes light.", is_user=False)
 
         self.input_field = ft.TextField(
             hint_text="Ask anything...",
@@ -195,7 +195,7 @@ class ChatView(ft.Container):
         self.current_chat_id = None
         print(f"current_chat_id set to: {self.current_chat_id}")
         self.chat_history.controls.clear()
-        self.add_message("Nexus is ready. Ask me anything.", is_user=False)
+        self.add_message("Nexus is ready. Ask me anything. I keep the answers useful and the jokes light.", is_user=False)
         self._safe_update_chat_history()
 
     def load_chat(self, chat_id):

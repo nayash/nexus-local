@@ -32,6 +32,7 @@ Return ONLY valid JSON with exactly this shape:
 {"retrieval_mode":"document_lookup|semantic_search","response_mode":"full_document|snippets"}
 """
 _PLANNER_CACHE = {}
+_IDENTITY_FILE_NAME = "nexus-identity.txt"
 _RELEVANCE_STOPWORDS = {
     "the",
     "a",
@@ -58,6 +59,30 @@ _EXISTENCE_QUERY_HINTS = (
     "which",
     "list",
     "any",
+)
+_SELF_IDENTITY_QUERY_HINTS = (
+    "who are you",
+    "what are you",
+    "tell me about yourself",
+    "introduce yourself",
+    "what can you do",
+    "what do you do",
+    "what are your capabilities",
+    "what are your limitations",
+    "what cant you do",
+    "what can t you do",
+    "what can you not do",
+    "who built you",
+    "who made you",
+    "who created you",
+    "your mission",
+    "are you offline",
+    "are you private",
+    "do you send my personal data",
+    "do you send personal data",
+    "what is your version",
+    "what version are you",
+    "what is your personality",
 )
 
 
@@ -121,6 +146,132 @@ def _is_existence_or_list_query(query: str) -> bool:
     has_hint = any(hint in normalized for hint in _EXISTENCE_QUERY_HINTS)
     has_target = any(token in normalized for token in ("idea", "ideas", "game", "book", "file", "files", "note", "notes"))
     return has_hint and has_target
+
+
+def _looks_like_identity_path(path: str) -> bool:
+    return os.path.basename((path or "").strip()).lower() == _IDENTITY_FILE_NAME
+
+
+def _is_self_identity_query(query: str) -> bool:
+    normalized = _normalize_for_match(query)
+    if not normalized:
+        return False
+    return any(hint in normalized for hint in _SELF_IDENTITY_QUERY_HINTS)
+
+
+def _parse_identity_profile(text: str) -> dict:
+    profile = {}
+    current_section = None
+
+    for raw_line in (text or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        if line.endswith(":") and ":" not in line[:-1]:
+            current_section = line[:-1].strip().lower().replace(" ", "_")
+            profile.setdefault(current_section, [])
+            continue
+
+        if line.startswith("- "):
+            if current_section:
+                profile.setdefault(current_section, []).append(line[2:].strip())
+            continue
+
+        if ":" in line:
+            key, value = line.split(":", 1)
+            profile[key.strip().lower().replace(" ", "_")] = value.strip()
+            current_section = None
+
+    return profile
+
+
+def _build_identity_answer(query: str, identity_text: str) -> Optional[str]:
+    if not _is_self_identity_query(query):
+        return None
+
+    profile = _parse_identity_profile(identity_text)
+    name = profile.get("name") or "Nexus"
+    version = profile.get("version")
+    builder = profile.get("builder")
+    mission = profile.get("core_mission") or profile.get("mission")
+    capabilities = [item for item in profile.get("capabilities", []) if item]
+    personality = [item for item in profile.get("personality", []) if item]
+
+    capability_lines = [item for item in capabilities if item.lower().startswith("i can")]
+    limitation_lines = [
+        item
+        for item in capabilities
+        if item.lower().startswith("i cannot") or item.lower().startswith("i do not")
+    ]
+
+    normalized = _normalize_for_match(query)
+
+    if "who built you" in normalized or "who made you" in normalized or "who created you" in normalized:
+        if builder:
+            return f"I was built by {builder}."
+        return None
+
+    if "mission" in normalized and mission:
+        return mission
+
+    if "version" in normalized and version:
+        return f"I am {name}, version {version}."
+
+    if "personality" in normalized and personality:
+        return f"My personality is {', '.join(personality)}."
+
+    if (
+        "what can you do" in normalized
+        or "what do you do" in normalized
+        or "capabilities" in normalized
+    ):
+        if capability_lines:
+            return "Here is what I can do:\n- " + "\n- ".join(capability_lines)
+
+    if (
+        "limitations" in normalized
+        or "what cant you do" in normalized
+        or "what can t you do" in normalized
+        or "what can you not do" in normalized
+    ):
+        if limitation_lines:
+            return "Here are my current limitations:\n- " + "\n- ".join(limitation_lines)
+
+    if "offline" in normalized:
+        offline_line = next((item for item in capabilities if "offline" in item.lower()), "")
+        if offline_line:
+            return offline_line
+
+    if "private" in normalized or "personal data" in normalized:
+        privacy_line = next(
+            (
+                item
+                for item in capabilities
+                if "personal data" in item.lower() or "cloud" in item.lower() or "privacy" in item.lower()
+            ),
+            "",
+        )
+        if privacy_line:
+            return privacy_line
+
+    intro_parts = [f"I'm {name}"]
+    if version:
+        intro_parts.append(f"version {version}")
+    intro = ", ".join(intro_parts)
+    if builder:
+        intro += f", built by {builder}"
+    intro += "."
+
+    summary_parts = [intro]
+    if mission:
+        summary_parts.append(mission)
+    if capability_lines:
+        summary_parts.append("I can " + "; ".join(item[6:].rstrip(".") for item in capability_lines[:3]) + ".")
+    if limitation_lines:
+        summary_parts.append("Current limitation: " + limitation_lines[0])
+
+    return " ".join(part.strip() for part in summary_parts if part.strip())
 
 
 def _should_apply_lexical_supplement(query: str) -> bool:
@@ -723,6 +874,11 @@ def resolve_direct_local_response(
     source_path = match["source_path"]
 
     if not wants_full_content:
+        if _looks_like_identity_path(source_path):
+            identity_text = _load_full_text(source_path, (match.get("source_type") or _source_type_from_path(source_path)).lower())
+            identity_answer = _build_identity_answer(query, identity_text)
+            if identity_answer:
+                return "", metadata + [build_final_response_artifact(identity_answer)]
         return "", metadata + [build_final_response_artifact(f"Matched file:\n{source_path}")]
 
     source_type = (match.get("source_type") or _source_type_from_path(source_path)).lower()
