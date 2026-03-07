@@ -4,6 +4,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+from src.rag.metadata_taxonomy import normalize_document_kind
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -40,6 +42,7 @@ def build_parent_row(
     width: Optional[int] = None,
     height: Optional[int] = None,
 ) -> dict:
+    document_kind = normalize_document_kind(metadata.get("document_kind"), default="document")
     return {
         "parent_id": parent_id,
         "doc_hash": doc_hash,
@@ -61,7 +64,7 @@ def build_parent_row(
         "title": metadata.get("title", os.path.splitext(os.path.basename(source_path))[0]),
         "author": metadata.get("author", ""),
         "owner": metadata.get("owner", "unknown"),
-        "document_kind": metadata.get("document_kind", "document"),
+        "document_kind": document_kind,
         "source_size_bytes": metadata.get("source_size_bytes"),
         "source_mtime_epoch": metadata.get("source_mtime_epoch"),
         "source_mtime_date": metadata.get("source_mtime_date", ""),
@@ -89,6 +92,7 @@ def build_child_row(
     width: Optional[int] = None,
     height: Optional[int] = None,
 ) -> dict:
+    document_kind = normalize_document_kind(metadata.get("document_kind"), default="document")
     return {
         "id": str(uuid.uuid4()),
         "parent_id": parent_id,
@@ -114,7 +118,7 @@ def build_child_row(
         "title": metadata.get("title", os.path.splitext(os.path.basename(source_path))[0]),
         "author": metadata.get("author", ""),
         "owner": metadata.get("owner", "unknown"),
-        "document_kind": metadata.get("document_kind", "document"),
+        "document_kind": document_kind,
         "source_size_bytes": metadata.get("source_size_bytes"),
         "source_mtime_epoch": metadata.get("source_mtime_epoch"),
         "source_mtime_date": metadata.get("source_mtime_date", ""),
@@ -132,6 +136,7 @@ def build_registry_row(
     num_children: int,
     metadata: dict,
 ) -> dict:
+    document_kind = normalize_document_kind(metadata.get("document_kind"), default="document")
     return {
         "doc_id": doc_hash,
         "source_path": os.path.abspath(source_path),
@@ -146,7 +151,7 @@ def build_registry_row(
         "title": metadata.get("title", os.path.splitext(os.path.basename(source_path))[0]),
         "author": metadata.get("author", ""),
         "owner": metadata.get("owner", "unknown"),
-        "document_kind": metadata.get("document_kind", "document"),
+        "document_kind": document_kind,
         "source_size_bytes": metadata.get("source_size_bytes"),
         "source_mtime_epoch": metadata.get("source_mtime_epoch"),
         "source_mtime_date": metadata.get("source_mtime_date", ""),

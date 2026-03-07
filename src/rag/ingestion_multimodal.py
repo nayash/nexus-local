@@ -15,7 +15,8 @@ from langchain_ollama import OllamaEmbeddings
 
 from src.core.config import Config
 from src.embeddings.multimodal_onnx import get_multimodal_embedder
-from src.rag.query_filters import compile_multimodal_filter
+from src.rag.metadata_taxonomy import normalize_document_kind
+from src.rag.query_filters import compile_multimodal_filter_plan
 from src.rag.lancedb_store import delete_rows, load_rows, search as search_rows, upsert_rows
 from src.rag.schemas import build_child_row, build_parent_row, build_registry_row, parse_extra
 
@@ -136,24 +137,27 @@ def _guess_document_kind(path: str, source_type: str, title: str, author: str) -
     ext = os.path.splitext(path)[1].lower()
     path_lower = path.lower()
     if source_type == "image":
-        return "image"
-    if ext == ".sh":
-        return "code"
-    if ext == ".csv":
-        return "data"
-    if ext == ".log" or "log" in file_name:
-        return "log"
-    if "book" in path_lower or "library" in path_lower:
-        return "book"
-    if author:
-        return "book"
-    if source_type in {"pdf", "docx", "txt", "md", "html"} and any(token in title.lower() for token in ("chapter", "novel", "poems", "stories")):
-        return "book"
-    return "document"
+        kind = "image"
+    elif ext == ".sh":
+        kind = "code"
+    elif ext == ".csv":
+        kind = "data"
+    elif ext == ".log" or "log" in file_name:
+        kind = "log"
+    elif "book" in path_lower or "library" in path_lower:
+        kind = "book"
+    elif author:
+        kind = "book"
+    elif source_type in {"pdf", "docx", "txt", "md", "html"} and any(token in title.lower() for token in ("chapter", "novel", "poems", "stories")):
+        kind = "book"
+    else:
+        kind = "document"
+    return normalize_document_kind(kind, default="document")
 
 
 def _metadata_with_text_hints(metadata: dict, text: str) -> dict:
     enriched = dict(metadata)
+    enriched["document_kind"] = normalize_document_kind(enriched.get("document_kind"), default="document")
     if not text:
         return enriched
 
@@ -163,7 +167,7 @@ def _metadata_with_text_hints(metadata: dict, text: str) -> dict:
         if match:
             enriched["author"] = match.group(1).strip()
             if enriched.get("document_kind") == "document":
-                enriched["document_kind"] = "book"
+                enriched["document_kind"] = normalize_document_kind("book", default="document")
     if enriched.get("title") == os.path.splitext(enriched.get("file_name", ""))[0]:
         first_line = next((line.strip() for line in snippet.splitlines() if line.strip()), "")
         if 3 <= len(first_line) <= 120:
@@ -182,7 +186,10 @@ def _base_metadata(path: str, source_type: str, doc_hash: str, workspace_id: str
         "title": title,
         "author": author,
         "owner": _get_file_owner(path),
-        "document_kind": _guess_document_kind(path, source_type, title, author),
+        "document_kind": normalize_document_kind(
+            _guess_document_kind(path, source_type, title, author),
+            default="document",
+        ),
         "source_mtime_epoch": int(stat.st_mtime),
         "source_mtime_date": datetime.fromtimestamp(stat.st_mtime).date().isoformat(),
         "source_ctime_epoch": int(stat.st_ctime),
@@ -835,6 +842,82 @@ def _search_clip_children(query: str, top_k: int, sql_filter: Optional[str]) -> 
     return rows
 
 
+_LEXICAL_STOPWORDS = {
+    "the",
+    "a",
+    "an",
+    "for",
+    "from",
+    "with",
+    "about",
+    "into",
+    "in",
+    "on",
+    "at",
+    "to",
+    "of",
+    "my",
+    "me",
+    "please",
+    "give",
+    "find",
+    "search",
+}
+
+
+def _query_terms(query: str) -> list[str]:
+    terms = []
+    for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9_\-]{1,}", query.lower()):
+        if token in _LEXICAL_STOPWORDS:
+            continue
+        if len(token) < 3:
+            continue
+        terms.append(token)
+    return terms
+
+
+def _build_source_path_in_filter(paths: list[str]) -> Optional[str]:
+    if not paths:
+        return None
+    escaped_paths = [f"'{_escape_sql(os.path.abspath(path))}'" for path in paths]
+    if len(escaped_paths) == 1:
+        return f"source_path = {escaped_paths[0]}"
+    return f"source_path IN ({', '.join(escaped_paths)})"
+
+
+def _lexical_source_path_filter(query: str, file_filter: Optional[str], limit: int = 20) -> Optional[str]:
+    abs_filter = os.path.abspath(file_filter) if file_filter else None
+    terms = _query_terms(query)
+    if not terms:
+        return None
+
+    scored = []
+    for row in load_rows(Config.MULTIMODAL_DOCUMENTS_TABLE):
+        source_path = os.path.abspath(row.get("source_path") or "")
+        if not source_path:
+            continue
+        if abs_filter and source_path != abs_filter:
+            continue
+
+        haystack = " ".join(
+            [
+                (row.get("file_name") or ""),
+                (row.get("title") or ""),
+                source_path,
+            ]
+        ).lower()
+        score = sum(1 for term in terms if term in haystack)
+        if score <= 0:
+            continue
+        scored.append((score, source_path))
+
+    if not scored:
+        return None
+
+    ranked_paths = [path for _, path in sorted(scored, key=lambda item: (-item[0], item[1]))]
+    return _build_source_path_in_filter(ranked_paths[:limit])
+
+
 def _row_score(row: dict, query_prefers_images: bool) -> float:
     distance = row.get("_distance")
     if distance is None:
@@ -870,24 +953,87 @@ def _load_parent_lookup(file_filter: Optional[str]) -> dict[str, dict]:
     return lookup
 
 
+def _run_semantic_retrieval_pass(
+    *,
+    label: str,
+    semantic_query: str,
+    sql_filter: Optional[str],
+    nomic_pool: int,
+    clip_pool: int,
+) -> list[dict]:
+    child_hits = []
+    nomic_hits = 0
+    clip_hits = 0
+
+    try:
+        nomic_rows = _search_nomic_children(semantic_query, top_k=nomic_pool, sql_filter=sql_filter)
+        nomic_hits = len(nomic_rows)
+        child_hits.extend(nomic_rows)
+    except Exception as exc:
+        print(f"⚠️ Nomic child search failed ({label} pass): {exc}")
+
+    try:
+        clip_rows = _search_clip_children(semantic_query, top_k=clip_pool, sql_filter=sql_filter)
+        clip_hits = len(clip_rows)
+        child_hits.extend(clip_rows)
+    except Exception as exc:
+        print(f"⚠️ CLIP child search failed ({label} pass): {exc}")
+
+    print(
+        "local retrieval pass | "
+        f"label={label} | sql_filter={sql_filter!r} | "
+        f"nomic_hits={nomic_hits} | clip_hits={clip_hits} | total_hits={len(child_hits)}"
+    )
+    return child_hits
+
+
 def search_multimodal(query: str, top_k: int = 5, file_filter: Optional[str] = None, workspace_id: Optional[str] = None) -> list[dict]:
     query_prefers_images = _query_prefers_images(query)
     query_text_heavy = _query_is_text_heavy(query)
-    semantic_query, sql_filter = compile_multimodal_filter(query, file_filter=file_filter, workspace_id=workspace_id)
+    plan = compile_multimodal_filter_plan(query, file_filter=file_filter, workspace_id=workspace_id)
+    semantic_query = plan.text_query
 
-    child_hits = []
     nomic_pool = max(top_k * 3, top_k) if query_text_heavy else max(top_k * 2, top_k)
     clip_pool = max(top_k * 3, top_k) if query_prefers_images else max(top_k * 2, top_k)
 
-    try:
-        child_hits.extend(_search_nomic_children(semantic_query, top_k=nomic_pool, sql_filter=sql_filter))
-    except Exception as exc:
-        print(f"⚠️ Nomic child search failed: {exc}")
+    if plan.strict_clauses:
+        clause_summary = [
+            f"{item.attribute} {item.comparator} {item.value} ({item.confidence})"
+            for item in plan.strict_clauses
+        ]
+        print(f"local retrieval filter clauses: {clause_summary}")
+    if plan.dropped_clauses:
+        dropped_summary = [f"{item.attribute} {item.comparator} {item.value}" for item in plan.dropped_clauses]
+        print(f"local retrieval low-confidence clauses: {dropped_summary}")
 
-    try:
-        child_hits.extend(_search_clip_children(semantic_query, top_k=clip_pool, sql_filter=sql_filter))
-    except Exception as exc:
-        print(f"⚠️ CLIP child search failed: {exc}")
+    attempts: list[tuple[str, Optional[str]]] = [("strict", plan.strict_sql_filter)]
+    if plan.should_try_relaxed:
+        attempts.append(("relaxed", plan.relaxed_sql_filter))
+    if attempts[-1][1] is not None:
+        attempts.append(("unfiltered", None))
+
+    child_hits = []
+    for label, sql_filter in attempts:
+        child_hits = _run_semantic_retrieval_pass(
+            label=label,
+            semantic_query=semantic_query,
+            sql_filter=sql_filter,
+            nomic_pool=nomic_pool,
+            clip_pool=clip_pool,
+        )
+        if child_hits:
+            break
+
+    if not child_hits:
+        lexical_filter = _lexical_source_path_filter(query, file_filter=file_filter)
+        if lexical_filter and lexical_filter not in {sql for _, sql in attempts}:
+            child_hits = _run_semantic_retrieval_pass(
+                label="lexical+semantic",
+                semantic_query=semantic_query,
+                sql_filter=lexical_filter,
+                nomic_pool=nomic_pool,
+                clip_pool=clip_pool,
+            )
 
     if not child_hits:
         return []

@@ -31,10 +31,117 @@ Return ONLY valid JSON with exactly this shape:
 {"retrieval_mode":"document_lookup|semantic_search","response_mode":"full_document|snippets"}
 """
 _PLANNER_CACHE = {}
+_RELEVANCE_STOPWORDS = {
+    "the",
+    "a",
+    "an",
+    "for",
+    "from",
+    "my",
+    "me",
+    "local",
+    "please",
+    "give",
+    "find",
+    "extract",
+    "show",
+    "tell",
+    "about",
+}
+_NOTE_INTENT_TERMS = {"note", "notes", "writing", "story", "tips", "idea", "ideas"}
 
 
 def _normalize_whitespace(value: str) -> str:
     return " ".join((value or "").split())
+
+
+def _query_terms(query: str) -> set[str]:
+    terms = set()
+    for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9_\-]{1,}", (query or "").lower()):
+        if len(token) < 3 or token in _RELEVANCE_STOPWORDS:
+            continue
+        terms.add(token)
+    return terms
+
+
+def _text_relevance_overlap_score(query_terms: set[str], text_blob: str) -> float:
+    if not query_terms:
+        return 0.0
+    lowered_blob = (text_blob or "").lower()
+    matched = sum(1 for term in query_terms if term in lowered_blob)
+    return matched / max(len(query_terms), 1)
+
+
+def _intent_source_bonus(row: dict, query_terms: set[str]) -> float:
+    if not query_terms:
+        return 0.0
+
+    source_type = str(row.get("source_type") or "").lower()
+    source_path = str(row.get("source_path") or "").lower()
+    file_name = str(row.get("file_name") or "").lower()
+
+    bonus = 0.0
+    if any(term in _NOTE_INTENT_TERMS for term in query_terms):
+        # Prefer note-like files for note/writing intents.
+        if source_type in {"md", "txt", "docx"}:
+            bonus += 0.25
+        if source_type == "pdf":
+            bonus -= 0.20
+
+    if any(term in source_path for term in query_terms):
+        bonus += 0.20
+    if any(term in file_name for term in query_terms):
+        bonus += 0.20
+
+    return bonus
+
+
+def _rerank_and_filter_rows(rows: list[dict], query: str, top_k: int) -> list[dict]:
+    if not rows:
+        return []
+
+    query_terms = _query_terms(query)
+    if not query_terms:
+        return rows[:top_k]
+
+    scored = []
+    for index, row in enumerate(rows):
+        extra = parse_extra(row.get("extra"))
+        text_blob = " ".join(
+            [
+                str(row.get("title") or ""),
+                str(row.get("file_name") or ""),
+                str(row.get("source_path") or ""),
+                str(extra.get("matched_text") or ""),
+                str(row.get("text") or ""),
+            ]
+        )
+        overlap = _text_relevance_overlap_score(query_terms, text_blob)
+        intent_bonus = _intent_source_bonus(row, query_terms)
+        base_score = float(row.get("_score") or 0.0)
+        final_score = base_score + (1.2 * overlap) + intent_bonus
+        scored.append((final_score, overlap, index, row))
+
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+
+    selected = []
+    seen_paths = set()
+    for final_score, overlap, _, row in scored:
+        source_path = os.path.abspath(row.get("source_path") or "")
+        if source_path in seen_paths:
+            continue
+
+        # Keep only rows with lexical support, unless nothing else is available.
+        if overlap <= 0 and len(selected) >= 2:
+            continue
+
+        selected.append(row)
+        if source_path:
+            seen_paths.add(source_path)
+        if len(selected) >= top_k:
+            break
+
+    return selected or [item[3] for item in scored[: max(1, min(top_k, 2))]]
 
 
 def _trim_excerpt(text: str, limit: int) -> str:
@@ -516,6 +623,8 @@ def _search_multimodal_results(query: str, file_filter: str = None, top_k: int =
     rows = search_multimodal(query, top_k=top_k, file_filter=file_filter)
     if not rows:
         return []
+    # Keep context focused by reranking and deduplicating per source file.
+    rows = _rerank_and_filter_rows(rows, query=query, top_k=min(top_k, 5))
 
     results = []
     for row in rows:

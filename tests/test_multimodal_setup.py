@@ -3,7 +3,7 @@ import os
 from src.core.config import Config
 from src.embeddings import multimodal_onnx
 from src.rag import ingestion_multimodal
-from src.rag.query_filters import compile_multimodal_filter
+from src.rag.query_filters import CompiledFilterPlan, compile_multimodal_filter, compile_multimodal_filter_plan
 
 
 class FakeEmbedder:
@@ -149,8 +149,15 @@ class TestMultimodalSetup:
 
         monkeypatch.setattr(
             ingestion_multimodal,
-            "compile_multimodal_filter",
-            lambda query, file_filter=None, workspace_id=None: (query, None),
+            "compile_multimodal_filter_plan",
+            lambda query, file_filter=None, workspace_id=None: CompiledFilterPlan(
+                text_query=query,
+                strict_sql_filter=None,
+                relaxed_sql_filter=None,
+                should_try_relaxed=False,
+                strict_clauses=[],
+                dropped_clauses=[],
+            ),
         )
 
         monkeypatch.setattr(
@@ -218,6 +225,59 @@ class TestMultimodalSetup:
         assert any('"matched_embedding_family": "nomic"' in row["extra"] for row in results)
         assert any('"matched_embedding_family": "clip"' in row["extra"] for row in results)
 
+    def test_search_multimodal_retries_with_relaxed_filter(self, monkeypatch):
+        parent_id_text = "parent-text"
+
+        monkeypatch.setattr(
+            ingestion_multimodal,
+            "compile_multimodal_filter_plan",
+            lambda query, file_filter=None, workspace_id=None: CompiledFilterPlan(
+                text_query=query,
+                strict_sql_filter="document_kind = 'document'",
+                relaxed_sql_filter=None,
+                should_try_relaxed=True,
+                strict_clauses=[],
+                dropped_clauses=[],
+            ),
+        )
+
+        def fake_nomic(query, top_k, sql_filter):
+            if sql_filter == "document_kind = 'document'":
+                return []
+            return [
+                {
+                    "parent_id": parent_id_text,
+                    "embedding_family": "nomic",
+                    "modality": "text",
+                    "text": "brainstorm writing hooks",
+                    "_distance": 0.1,
+                    "_retrieval_channel": "nomic",
+                    "_rank": 0,
+                }
+            ]
+
+        monkeypatch.setattr(ingestion_multimodal, "_search_nomic_children", fake_nomic)
+        monkeypatch.setattr(ingestion_multimodal, "_search_clip_children", lambda *args, **kwargs: [])
+        monkeypatch.setattr(ingestion_multimodal, "_lexical_source_path_filter", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            ingestion_multimodal,
+            "_load_parent_lookup",
+            lambda file_filter=None: {
+                parent_id_text: {
+                    "parent_id": parent_id_text,
+                    "modality": "text",
+                    "text": "Brainstorm writing hooks and outlines.",
+                    "source_path": "/tmp/writing_tips.md",
+                    "source_type": "md",
+                    "extra": "{}",
+                },
+            },
+        )
+
+        results = ingestion_multimodal.search_multimodal("give me writing ideas from my notes", top_k=5)
+        assert len(results) == 1
+        assert results[0]["parent_id"] == parent_id_text
+
     def test_compile_multimodal_filter_fallbacks_for_common_metadata_queries(self, monkeypatch):
         monkeypatch.setattr("src.rag.query_filters._get_query_constructor", lambda: (_ for _ in ()).throw(RuntimeError("no llm")))
 
@@ -228,6 +288,15 @@ class TestMultimodalSetup:
         _, sql_filter = compile_multimodal_filter("give me all the books I have by Franz Kafka")
         assert "document_kind = 'book'" in (sql_filter or "")
         assert "author = 'Franz Kafka'" in (sql_filter or "")
+
+    def test_compile_multimodal_filter_plan_relaxes_low_confidence_document_kind(self, monkeypatch):
+        monkeypatch.setattr("src.rag.query_filters._get_query_constructor", lambda: (_ for _ in ()).throw(RuntimeError("no llm")))
+
+        plan = compile_multimodal_filter_plan("give me writing ideas from my notes")
+
+        assert plan.strict_sql_filter == "document_kind = 'document'"
+        assert plan.should_try_relaxed is True
+        assert plan.relaxed_sql_filter is None
 
     def test_real_onnx_embedder_setup_if_available(self):
         import pytest
