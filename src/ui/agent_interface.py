@@ -1,13 +1,16 @@
+import asyncio
 import re
 import uuid
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from src.agents.graph import build_graph
+from src.agents.graph import build_graph, build_manager_v2_graph
+from src.core.config import Config
 from src.tools.tool_results import extract_artifacts, find_final_response_artifact
 
 
-# Global cache for the compiled graph
-_cached_graph = None
+# Global cache for compiled graphs
+_cached_graphs = {}
+_cached_shadow_graph = None
 _TOOL_ARTIFACT_NAMES = {
     "web_search_tool",
     "local_search_tool",
@@ -30,6 +33,7 @@ _REASONING_FOLLOWUP_PATTERNS = (
 _RESPONSE_PHASE_TAG_PREFIX = "nexus_phase:"
 _RESPONSE_PHASE_DECISION = "decision"
 _VISIBLE_RESPONSE_PHASES = {"final", "final_retry"}
+_VISIBLE_LLM_NODES = {"agent", "response_synthesizer"}
 
 
 def _strip_think_markup_for_ui(text: str) -> str:
@@ -173,12 +177,65 @@ def _phase_allows_nonstream_output(phase: str) -> bool:
     # Unknown phase falls back to "allow"; final arbitration keeps only the last candidate.
     return True
 
+def _node_is_user_visible_llm(langgraph_node: str, phase: str) -> bool:
+    if langgraph_node not in _VISIBLE_LLM_NODES:
+        return False
+    if phase:
+        return phase in _VISIBLE_RESPONSE_PHASES or _phase_allows_nonstream_output(phase)
+    return langgraph_node in _VISIBLE_LLM_NODES
+
+
+def _collect_sources_from_state_output(output_state, context: dict):
+    if not isinstance(output_state, dict):
+        return
+    candidates = []
+    if isinstance(output_state.get("sources"), list):
+        candidates.extend(output_state.get("sources") or [])
+    bundle = output_state.get("evidence_bundle")
+    if isinstance(bundle, dict) and isinstance(bundle.get("source_metadata"), list):
+        candidates.extend(bundle.get("source_metadata") or [])
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        if item not in context["sources"]:
+            context["sources"].append(item)
+
+
 def get_graph():
-    global _cached_graph
-    if _cached_graph is None:
-        print("--- 🏗️ BUILDING GRAPH (Singleton) ---")
-        _cached_graph = build_graph()
-    return _cached_graph
+    pipeline = Config.RAG_PIPELINE_VERSION
+    if pipeline not in _cached_graphs:
+        print(f"--- 🏗️ BUILDING GRAPH (pipeline={pipeline}) ---")
+        _cached_graphs[pipeline] = build_graph()
+    return _cached_graphs[pipeline]
+
+
+def get_shadow_graph():
+    global _cached_shadow_graph
+    if _cached_shadow_graph is None:
+        print("--- 🏗️ BUILDING SHADOW GRAPH (manager_v2) ---")
+        _cached_shadow_graph = build_manager_v2_graph()
+    return _cached_shadow_graph
+
+
+async def _run_shadow_graph(trace_id: str, inputs: dict):
+    try:
+        shadow_graph = get_shadow_graph()
+        final_state = None
+        async for event in shadow_graph.astream_events(inputs, version="v2"):
+            if event.get("event") == "on_chain_end":
+                output = (event.get("data") or {}).get("output")
+                if isinstance(output, dict):
+                    final_state = output
+        if isinstance(final_state, dict):
+            draft = str(final_state.get("final_draft") or "").strip()
+            print(
+                f"[RAG {trace_id}] shadow_complete | "
+                f"sources={len(final_state.get('sources') or [])} | draft_chars={len(draft)}"
+            )
+        else:
+            print(f"[RAG {trace_id}] shadow_complete | no_state_output")
+    except Exception as exc:
+        print(f"[RAG {trace_id}] shadow_error | {exc}")
 
 async def run_agent_stream(query: str, chat_history: list, context: dict = None):
     """
@@ -198,6 +255,7 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
     context.setdefault("sources", [])
     context.setdefault("visual_artifacts", [])
     context.setdefault("last_turn_reasoning", "")
+    pipeline = Config.RAG_PIPELINE_VERSION
         
     # 1. Initialize Graph (Cached)
     graph = get_graph()
@@ -233,13 +291,25 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
     inputs = {
         "messages": messages,
         "focused_file": context.get("focused_file"),
+        "task_history": [],
+        "sources": [],
     }
     trace_id = uuid.uuid4().hex[:8]
     query_preview = " ".join((query or "").split())[:180]
     print(
-        f"[RAG {trace_id}] start | history_msgs={len(chat_history)} | "
+        f"[RAG {trace_id}] start | pipeline={pipeline} | history_msgs={len(chat_history)} | "
         f'focused_file={context.get("focused_file")} | query="{query_preview}"'
     )
+
+    shadow_task = None
+    if Config.RAG_V2_SHADOW and pipeline != "manager_v2":
+        shadow_inputs = {
+            "messages": list(messages),
+            "focused_file": context.get("focused_file"),
+            "task_history": [],
+            "sources": [],
+        }
+        shadow_task = asyncio.create_task(_run_shadow_graph(trace_id, shadow_inputs))
     
     # 3. Stream Events
     # The agent now uses a non-streaming tool-decision pass, then a streaming
@@ -256,20 +326,17 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
         kind = event["event"]
         run_id = event.get("run_id", "")
 
-        # CRITICAL: Only process LLM events from the "agent" node.
-        # Tools (e.g. local_search_tool) invoke their own internal LLMs
-        # (query_constructor in _search_with_filter) which also fire
-        # on_chat_model_* events. Those produce JSON like
-        # {"query": "...", "filter": "NO_FILTER"} that must NOT reach the UI.
+        # Only process user-visible LLM nodes.
+        # Retrieval internals can invoke helper LLMs; those should never be streamed.
         langgraph_node = event.get("metadata", {}).get("langgraph_node")
 
-        if kind == "on_chat_model_start" and langgraph_node == "agent":
+        if kind == "on_chat_model_start" and langgraph_node in _VISIBLE_LLM_NODES:
             pending_nonstream_output = None
             phase = _extract_response_phase(event)
             llm_buffers[run_id] = _create_llm_buffer(phase=phase)
             print(f"[RAG {trace_id}] llm_start | run_id={run_id[:8]} | phase={phase or 'unknown'}")
 
-        elif kind == "on_chat_model_stream" and langgraph_node == "agent":
+        elif kind == "on_chat_model_stream" and langgraph_node in _VISIBLE_LLM_NODES:
             data = event.get("data", {})
             chunk = data.get("chunk")
             if chunk:
@@ -280,7 +347,7 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
                 for emitted_text in _consume_stream_chunk(buffer_state, chunk):
                     buffer_state["stream_chunk_count"] += 1
                     buffer_state["stream_char_count"] += len(emitted_text)
-                    if should_emit_stream:
+                    if should_emit_stream and _node_is_user_visible_llm(langgraph_node, phase):
                         if buffer_state["stream_chunk_count"] == 1:
                             print(
                                 f"[RAG {trace_id}] llm_stream_begin | "
@@ -290,7 +357,7 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
                         answer_emitted = True
                         buffer_state["ui_emitted"] = True
 
-        elif kind == "on_chat_model_end" and langgraph_node == "agent":
+        elif kind == "on_chat_model_end" and langgraph_node in _VISIBLE_LLM_NODES:
             data = event.get("data", {})
             output = data.get("output")
             buffer_state = llm_buffers.pop(run_id, _create_llm_buffer())
@@ -338,6 +405,14 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
                                 f"[RAG {trace_id}] candidate_discarded | phase={phase or 'unknown'} | "
                                 "reason=decision_phase_non_user_visible"
                             )
+
+        elif kind == "on_chain_end":
+            output_state = (event.get("data") or {}).get("output")
+            _collect_sources_from_state_output(output_state, context)
+            if isinstance(output_state, dict):
+                draft = str(output_state.get("final_draft") or "").strip()
+                if draft and not pending_nonstream_output and not answer_emitted:
+                    pending_nonstream_output = draft
 
         elif kind == "on_tool_end":
             # Capture sources from tool output
@@ -426,6 +501,8 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
             if not url.startswith('http'):
                 url = quote(url, safe='/:')
             yield f"{i}. [{title}]({url})\n"
+    if shadow_task:
+        await shadow_task
     print(
         f"[RAG {trace_id}] complete | answer_emitted={answer_emitted} | "
         f"sources={len(context.get('sources', []))} | "

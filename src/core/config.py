@@ -61,3 +61,7 @@ class Config:
     EMBEDDING_DEVICE: str = os.getenv("EMBEDDING_DEVICE", "cuda")
     ORT_PROVIDER: str = os.getenv("ORT_PROVIDER", "CUDAExecutionProvider")
     ORT_PROVIDERS = [ORT_PROVIDER, "CPUExecutionProvider"] if ORT_PROVIDER else ["CPUExecutionProvider"]
+
+    # RAG pipeline rollout
+    RAG_PIPELINE_VERSION: str = os.getenv("RAG_PIPELINE_VERSION", "legacy").strip().lower()
+    RAG_V2_SHADOW: bool = _env_flag("RAG_V2_SHADOW", "false")

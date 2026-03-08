@@ -14,7 +14,7 @@ from src.rag.lancedb_store import load_rows
 from src.rag.query_filters import build_multimodal_structured_query
 from src.rag.schemas import parse_extra
 from src.tools.schemas import SearchResult
-from src.tools.tool_results import build_final_response_artifact
+from src.tools.tool_results import build_final_response_artifact, extract_final_response
 
 
 _DIRECT_RESPONSE_CHAR_LIMIT = 100000
@@ -128,6 +128,18 @@ _SELF_IDENTITY_QUERY_HINTS = (
     "what version are you",
     "what is your personality",
 )
+
+_LOCAL_RETRIEVAL_V2_PROMPT = """You are a local retrieval planner.
+
+Classify the user request into exactly one mode:
+- semantic_answer: answer from document contents/snippets.
+- document_lookup: identify/list/locate files and metadata (path, title, author, type).
+- full_document: return complete document text.
+- hybrid: provide both semantic answer and compact matching-file inventory.
+
+Return ONLY valid JSON:
+{"mode":"semantic_answer|document_lookup|full_document|hybrid","reason":"short reason"}
+"""
 
 
 def _normalize_whitespace(value: str) -> str:
@@ -616,6 +628,54 @@ def _plan_local_retrieval(query: str, file_filter: str = "") -> dict:
     return plan
 
 
+def _plan_local_retrieval_v2(query: str, file_filter: str = "") -> str:
+    context_line = (
+        f"Focused file: {os.path.abspath(file_filter)}"
+        if file_filter
+        else "Focused file: none"
+    )
+    messages = [
+        SystemMessage(content=_LOCAL_RETRIEVAL_V2_PROMPT),
+        HumanMessage(content=f"{context_line}\nUser query: {query}"),
+    ]
+    default_mode = "semantic_answer"
+    try:
+        response = _get_retrieval_planner().invoke(messages)
+        payload = _extract_json_object(getattr(response, "content", "") or "")
+        mode = str(payload.get("mode", "")).strip().lower()
+        if mode not in {"semantic_answer", "document_lookup", "full_document", "hybrid"}:
+            mode = default_mode
+        return mode
+    except Exception as exc:
+        print(f"⚠️ Local retrieval planner v2 failed: {exc}")
+        return default_mode
+
+
+def _compact_inventory_from_matches(matches: list[dict], limit: int = 12) -> str:
+    if not matches:
+        return "No matching indexed files were found."
+    lines = [f"Matching files ({len(matches)}):"]
+    for row in matches[:limit]:
+        title = row.get("title") or row.get("file_name") or os.path.basename(row.get("source_path") or "")
+        path = row.get("source_path") or ""
+        lines.append(f"- {title} :: {path}")
+    if len(matches) > limit:
+        lines.append(f"... and {len(matches) - limit} more")
+    return "\n".join(lines)
+
+
+def _dedupe_source_metadata(items: list[dict]) -> list[dict]:
+    deduped = []
+    seen = set()
+    for item in items:
+        key = (str(item.get("title", "")), str(item.get("url", "")), str(item.get("type", "")))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
 def _source_type_from_path(path: str) -> str:
     ext = os.path.splitext(path)[1].lower()
     return {
@@ -965,7 +1025,7 @@ def _supplement_with_lexical_parent_rows(rows: list[dict], query: str, file_filt
     return list(rows) + supplemental
 
 
-def resolve_direct_local_response(
+def _resolve_direct_local_response_legacy(
     query: str, file_filter: str = ""
 ) -> Optional[tuple[str, list[dict]]]:
     normalized_file_filter = (file_filter or "").strip()
@@ -1043,7 +1103,166 @@ def resolve_direct_local_response(
     return "", metadata + [build_final_response_artifact(prefix + display_text)]
 
 
-def search_local(query: str, file_filter: str = "") -> List[SearchResult]:
+def _resolve_direct_local_response_v2(
+    query: str,
+    file_filter: str = "",
+    explicit_mode: str = "document_lookup",
+) -> tuple[str, list[dict]]:
+    normalized_file_filter = (file_filter or "").strip()
+    mode = (explicit_mode or "document_lookup").strip().lower()
+    if mode not in {"document_lookup", "full_document", "hybrid"}:
+        mode = "document_lookup"
+    wants_full_content = mode == "full_document"
+
+    matches = _query_documents_table(query, normalized_file_filter)
+    metadata = _build_source_metadata(matches)
+    if not matches:
+        return (
+            "",
+            metadata + [build_final_response_artifact("No indexed files matched the requested document lookup.")],
+        )
+
+    if wants_full_content and len(matches) > 1:
+        listing = _compact_inventory_from_matches(matches, limit=20)
+        message = f"{listing}\n\nSpecify the exact file to return full content."
+        return "", metadata + [build_final_response_artifact(message)]
+
+    if not wants_full_content and len(matches) > 1:
+        listing = _compact_inventory_from_matches(matches, limit=20)
+        return "", metadata + [build_final_response_artifact(listing)]
+
+    match = matches[0]
+    source_path = match["source_path"]
+    source_type = (match.get("source_type") or _source_type_from_path(source_path)).lower()
+
+    if not wants_full_content:
+        if _looks_like_identity_path(source_path):
+            identity_text = _load_full_text(source_path, source_type)
+            identity_answer = _build_identity_answer(query, identity_text)
+            if identity_answer:
+                return "", metadata + [build_final_response_artifact(identity_answer)]
+        metadata_answer = _document_metadata_answer(query, match)
+        if metadata_answer:
+            return "", metadata + [build_final_response_artifact(metadata_answer)]
+        return "", metadata + [build_final_response_artifact(f"Matched file:\n{source_path}")]
+
+    if source_type == "image":
+        return (
+            "",
+            metadata
+            + [
+                build_final_response_artifact(
+                    f"Matched file:\n{source_path}\n\nThis file is an image and does not have extractable text content."
+                )
+            ],
+        )
+
+    full_text = _load_full_text(source_path, source_type)
+    if not full_text.strip():
+        return (
+            "",
+            metadata
+            + [
+                build_final_response_artifact(
+                    f"Matched file:\n{source_path}\n\nThe file was found, but its text content could not be reconstructed."
+                )
+            ],
+        )
+
+    display_text, truncated = _limit_direct_payload(full_text)
+    prefix = f"Full content of {source_path}:\n\n"
+    if truncated:
+        prefix += "[The file exceeds the direct display limit, so the output below is truncated.]\n\n"
+    return "", metadata + [build_final_response_artifact(prefix + display_text)]
+
+
+def resolve_direct_local_response(
+    query: str, file_filter: str = ""
+) -> Optional[tuple[str, list[dict]]]:
+    if Config.RAG_PIPELINE_VERSION == "manager_v2":
+        mode = _plan_local_retrieval_v2(query, file_filter)
+        if mode in {"document_lookup", "full_document", "hybrid"}:
+            return _resolve_direct_local_response_v2(query, file_filter, explicit_mode=mode)
+        return None
+    return _resolve_direct_local_response_legacy(query, file_filter)
+
+
+def execute_local_retrieval_task_v2(
+    query: str,
+    file_filter: str = "",
+    mode: str = "semantic_answer",
+) -> dict:
+    normalized_mode = (mode or "").strip().lower()
+    if normalized_mode not in {"semantic_answer", "document_lookup", "full_document", "hybrid"}:
+        normalized_mode = _plan_local_retrieval_v2(query, file_filter)
+
+    source_metadata: list[dict] = []
+    evidence: list[dict] = []
+    summary_parts: list[str] = []
+
+    if normalized_mode in {"semantic_answer", "hybrid"}:
+        semantic_results = _search_multimodal_results(
+            query,
+            file_filter=(file_filter or "").strip() or None,
+            top_k=8,
+            apply_lexical_supplement=False,
+        )
+        for index, result in enumerate(semantic_results[:8], start=1):
+            snippet = (result.content or "").strip()
+            summary_parts.append(f"[semantic {index}] {result.title}\n{snippet[:900]}")
+            source_metadata.append({"title": result.title, "url": result.url, "type": "local"})
+            evidence.append(
+                {
+                    "source_type": "local",
+                    "title": result.title,
+                    "url": result.url,
+                    "snippet": snippet[:1200],
+                    "score": max(0.0, 1.0 - (0.08 * (index - 1))),
+                    "metadata": {"channel": "semantic"},
+                }
+            )
+
+    if normalized_mode in {"document_lookup", "full_document", "hybrid"}:
+        lookup_mode = "full_document" if normalized_mode == "full_document" else "document_lookup"
+        lookup_payload = _resolve_direct_local_response_v2(query, file_filter, explicit_mode=lookup_mode)
+        lookup_text = extract_final_response(lookup_payload[1]) if lookup_payload else ""
+        lookup_sources = [
+            item
+            for item in (lookup_payload[1] if lookup_payload else [])
+            if isinstance(item, dict) and item.get("type") != "final_response"
+        ]
+        if lookup_text:
+            heading = "[lookup]"
+            if normalized_mode == "hybrid":
+                heading = "[inventory]"
+            summary_parts.append(f"{heading} {lookup_text}")
+            evidence.append(
+                {
+                    "source_type": "local",
+                    "title": "Local document lookup",
+                    "url": "",
+                    "snippet": lookup_text[:1800],
+                    "score": 0.75,
+                    "metadata": {"channel": "lookup", "mode": lookup_mode},
+                }
+            )
+        source_metadata.extend(lookup_sources)
+
+    source_metadata = _dedupe_source_metadata(source_metadata)
+    status = "ok" if summary_parts else "empty"
+    summary = "\n\n".join(summary_parts) if summary_parts else "No relevant local evidence found."
+    proposed_answer = summary if normalized_mode in {"document_lookup", "full_document"} else ""
+    return {
+        "worker": "local_retrieval_worker",
+        "status": status,
+        "summary": summary[:12000],
+        "proposed_answer": proposed_answer[:4000],
+        "evidence": evidence,
+        "source_metadata": source_metadata,
+    }
+
+
+def _search_local_legacy(query: str, file_filter: str = "") -> List[SearchResult]:
     """
     Searches the local LanceDB for relevant document chunks using the active strategy.
     Args:
@@ -1063,7 +1282,12 @@ def search_local(query: str, file_filter: str = "") -> List[SearchResult]:
 
     try:
         top_k = 10 if not file_filter else 20
-        multimodal_results = _search_multimodal_results(query, file_filter=file_filter, top_k=top_k)
+        multimodal_results = _search_multimodal_results(
+            query,
+            file_filter=file_filter,
+            top_k=top_k,
+            apply_lexical_supplement=True,
+        )
     except Exception as exc:
         print(f"⚠️ Multimodal search failed: {exc}")
         multimodal_results = []
@@ -1077,7 +1301,50 @@ def search_local(query: str, file_filter: str = "") -> List[SearchResult]:
     return multimodal_results
 
 
-def _search_multimodal_results(query: str, file_filter: str = None, top_k: int = 10) -> List[SearchResult]:
+def _search_local_v2(query: str, file_filter: str = "") -> List[SearchResult]:
+    if not Config.MULTIMODAL_EMBEDDINGS_ENABLED:
+        return [SearchResult(title="System", url="local", content="No local knowledge found. Please ingest files or folders first.")]
+
+    normalized_file_filter = (file_filter or "").strip()
+    mode = _plan_local_retrieval_v2(query, normalized_file_filter)
+    payload = execute_local_retrieval_task_v2(
+        query=query,
+        file_filter=normalized_file_filter,
+        mode=mode,
+    )
+
+    results: list[SearchResult] = []
+    for evidence in payload.get("evidence", []):
+        if not isinstance(evidence, dict):
+            continue
+        results.append(
+            SearchResult(
+                title=evidence.get("title", "Local Evidence"),
+                url=evidence.get("url", ""),
+                content=evidence.get("snippet", ""),
+                source="local",
+            )
+        )
+
+    if results:
+        return results[:10]
+
+    fallback = (payload.get("summary") or "").strip() or "No relevant local evidence found."
+    return [SearchResult(title="Info", url="", content=fallback, source="local")]
+
+
+def search_local(query: str, file_filter: str = "") -> List[SearchResult]:
+    if Config.RAG_PIPELINE_VERSION == "manager_v2":
+        return _search_local_v2(query, file_filter=file_filter)
+    return _search_local_legacy(query, file_filter=file_filter)
+
+
+def _search_multimodal_results(
+    query: str,
+    file_filter: str = None,
+    top_k: int = 10,
+    apply_lexical_supplement: bool = True,
+) -> List[SearchResult]:
     rows = search_multimodal(query, top_k=top_k, file_filter=file_filter) or []
     semantic_query = query
     if rows:
@@ -1085,7 +1352,7 @@ def _search_multimodal_results(query: str, file_filter: str = None, top_k: int =
         if semantic_query.strip() != (query or "").strip():
             print(f"local rerank query | original={query!r} | effective={semantic_query!r}")
 
-    if _should_apply_lexical_supplement(semantic_query):
+    if apply_lexical_supplement and _should_apply_lexical_supplement(semantic_query):
         rows = _supplement_with_lexical_parent_rows(
             rows,
             query=semantic_query,
