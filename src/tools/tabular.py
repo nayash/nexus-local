@@ -82,6 +82,8 @@ def generate_tabular_analysis_code(user_query: str, df: pd.DataFrame) -> str:
         "- If the user asks for a chart, graph, histogram, trendline, scatter plot, bar chart, line chart, or pie chart, create the chart with matplotlib and finish with emit_plot().\n"
         "- If the user does not ask for a chart, do not create a plot; finish with emit_text().\n"
         "- Keep the summary concise and user-facing.\n\n"
+        "- Never mention limitations such as 'text-based interface', 'cannot display image', or instructions about decoding base64.\n"
+        "- Never include base64 data in the summary.\n\n"
         f"User request:\n{user_query}\n\n"
         f"DataFrame context:\n{_build_dataframe_context(df)}\n"
     )

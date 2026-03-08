@@ -1,9 +1,15 @@
 from langchain_core.structured_query import Comparator, Comparison, Operation, Operator
+import pytest
 
 from src.tools.local import _normalize_retrieval_plan, _row_matches_filter
 from src.tools.local import _rerank_and_filter_rows, _search_multimodal_results, _should_apply_lexical_supplement, resolve_direct_local_response
 from src.rag.query_filters import compile_multimodal_filter, compile_multimodal_filter_plan
 from src.tools.tool_results import extract_final_response
+
+
+@pytest.fixture(autouse=True)
+def _force_legacy_pipeline(monkeypatch):
+    monkeypatch.setattr("src.tools.local.Config.RAG_PIPELINE_VERSION", "legacy")
 
 
 def test_like_filter_matches_case_insensitive_filename():

@@ -1,5 +1,12 @@
+import pytest
+
 from src.tools.local import _build_identity_answer, resolve_direct_local_response
 from src.tools.tool_results import extract_final_response
+
+
+@pytest.fixture(autouse=True)
+def _force_legacy_pipeline(monkeypatch):
+    monkeypatch.setattr("src.tools.local.Config.RAG_PIPELINE_VERSION", "legacy")
 
 
 IDENTITY_TEXT = """# Identity: Nexus Local

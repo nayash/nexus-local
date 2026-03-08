@@ -1,5 +1,4 @@
 import json
-import os
 from typing import Dict, List
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -20,14 +19,8 @@ from src.agents.utils import trim_messages
 from src.core.config import Config
 from src.core.user_settings import get_setting
 from src.tools.local import execute_local_retrieval_task_v2, get_nexus_identity_response
+from src.tools.registry import analyze_tabular_file_tool
 from src.tools.search import search_web
-from src.tools.tabular import (
-    execute_tabular_analysis,
-    extract_tabular_result_payload,
-    format_tabular_result_content,
-    generate_tabular_analysis_code,
-    load_tabular_dataframe,
-)
 from src.tools.tool_results import extract_final_response
 
 
@@ -357,26 +350,20 @@ def tabular_worker_node(state: AgentState):
         return _append_worker_result(state, worker_result)
 
     try:
-        dataframe, abs_path = load_tabular_dataframe(focused_file)
-        generated_code = generate_tabular_analysis_code(query, dataframe)
-        result = execute_tabular_analysis(dataframe, generated_code)
-        raw_stdout = result.stdout or ""
-        payload = extract_tabular_result_payload(raw_stdout)
-        content = format_tabular_result_content(
-            user_query=query,
-            abs_path=abs_path,
-            df=dataframe,
-            generated_code=generated_code,
-            payload=payload,
-            raw_stdout=raw_stdout,
-            stderr=result.stderr or "",
-            timed_out=result.timed_out,
-            exit_code=result.exit_code,
-        )
+        content, metadata = analyze_tabular_file_tool.func(focused_file, query)
+        metadata = [item for item in (metadata or []) if isinstance(item, dict)]
+        plot_artifacts = [item for item in metadata if item.get("type") == "plot" and item.get("image_base64")]
+        local_sources = [item for item in metadata if item.get("type") in {"local", "plot"}]
+        if plot_artifacts:
+            plot_summary = str(plot_artifacts[0].get("summary", "") or "").strip()
+            if plot_summary:
+                content = f"Generated requested plot.\n\n{plot_summary}"
+            else:
+                content = "Generated requested plot."
         status = "ok"
     except Exception as exc:
         content = f"Failed to analyze focused tabular file: {exc}"
-        abs_path = focused_file
+        local_sources = [{"title": focused_file.split("/")[-1], "url": focused_file, "type": "local"}]
         status = "error"
 
     worker_result = WorkerResult(
@@ -387,13 +374,13 @@ def tabular_worker_node(state: AgentState):
         evidence=[
             EvidenceItem(
                 source_type="local",
-                title=os.path.basename(abs_path),
-                url=abs_path,
+                title=str((local_sources[0] if local_sources else {}).get("title", "Tabular Analysis")),
+                url=str((local_sources[0] if local_sources else {}).get("url", focused_file)),
                 snippet=content[:1200],
                 score=1.0 if status == "ok" else 0.0,
             )
         ],
-        source_metadata=[{"title": os.path.basename(abs_path), "url": abs_path, "type": "local"}],
+        source_metadata=local_sources,
     )
     return _append_worker_result(state, worker_result)
 
