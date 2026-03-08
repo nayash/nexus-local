@@ -65,6 +65,35 @@ def test_plan_relaxes_low_confidence_filters_for_broad_personal_queries(monkeypa
     assert plan.relaxed_sql_filter is None
 
 
+def test_corrective_prompt_builds_precise_focus_filter_and_blocks_unfiltered_fallback(monkeypatch):
+    monkeypatch.setattr("src.rag.query_filters._get_query_constructor", lambda: (_ for _ in ()).throw(RuntimeError("no llm")))
+    monkeypatch.setattr(
+        "src.rag.query_filters._llm_normalize_query",
+        lambda query: ('list down the "Writing tips" from my files', ["Writing tips"], "high", True),
+    )
+
+    plan = compile_multimodal_filter_plan(
+        'why are you giving me prompts and ideas?? I asked you to list down the "Writing tips" from my files.'
+    )
+
+    strict_sql = (plan.strict_sql_filter or "").lower()
+    assert plan.text_query == 'list down the "Writing tips" from my files'
+    assert "writing tips" in strict_sql
+    assert "title like" in strict_sql or "file_name like" in strict_sql or "source_path like" in strict_sql
+    assert plan.allow_unfiltered_fallback is False
+
+
+def test_deterministic_corrective_rewrite_runs_when_llm_normalizer_fails(monkeypatch):
+    monkeypatch.setattr("src.rag.query_filters._get_query_constructor", lambda: (_ for _ in ()).throw(RuntimeError("no llm")))
+    monkeypatch.setattr("src.rag.query_filters._llm_normalize_query", lambda query: (query, [], "low", False))
+
+    plan = compile_multimodal_filter_plan(
+        'why are you giving me prompts and ideas?? I asked you to list down the "Writing tips" from my files.'
+    )
+
+    assert plan.text_query.lower().startswith("list down the")
+
+
 def test_reranker_prioritizes_relevant_note_and_deduplicates_same_source():
     rows = [
         {
@@ -101,7 +130,7 @@ def test_reranker_prioritizes_relevant_note_and_deduplicates_same_source():
     assert len({row["source_path"] for row in ranked}) == len(ranked)
 
 
-def test_existence_query_forces_document_lookup_even_when_planner_says_semantic(monkeypatch):
+def test_explicit_file_inventory_query_forces_document_lookup_even_when_planner_says_semantic(monkeypatch):
     monkeypatch.setattr(
         "src.tools.local._plan_local_retrieval",
         lambda query, file_filter="": {"retrieval_mode": "semantic_search", "response_mode": "snippets"},
@@ -118,12 +147,76 @@ def test_existence_query_forces_document_lookup_even_when_planner_says_semantic(
         ],
     )
 
-    payload = resolve_direct_local_response("Did I have any text based adventure game idea?")
+    payload = resolve_direct_local_response("Do I have any files about text based adventure game ideas?")
     assert payload is not None
     response = extract_final_response(payload)
     assert response is not None
     assert "Yes, I found 1 matching idea file(s):" in response
     assert "Abaddon Hotel" in response
+
+
+def test_content_query_does_not_short_circuit_to_file_listing(monkeypatch):
+    monkeypatch.setattr(
+        "src.tools.local._plan_local_retrieval",
+        lambda query, file_filter="": {"retrieval_mode": "document_lookup", "response_mode": "snippets"},
+    )
+    monkeypatch.setattr(
+        "src.tools.local._query_documents_table",
+        lambda query, file_filter="": [
+            {
+                "title": "Writing ideas",
+                "file_name": "writing_ideas.md",
+                "source_path": "/tmp/writing_ideas.md",
+                "source_type": "md",
+            }
+        ],
+    )
+
+    payload = resolve_direct_local_response("List down the writing ideas I had")
+    assert payload is None
+
+
+def test_single_match_snippet_query_defers_to_semantic_when_not_metadata(monkeypatch):
+    monkeypatch.setattr(
+        "src.tools.local._plan_local_retrieval",
+        lambda query, file_filter="": {"retrieval_mode": "document_lookup", "response_mode": "snippets"},
+    )
+    monkeypatch.setattr(
+        "src.tools.local._query_documents_table",
+        lambda query, file_filter="": [
+            {
+                "title": "Project report",
+                "file_name": "project_report.md",
+                "source_path": "/tmp/project_report.md",
+                "source_type": "md",
+            }
+        ],
+    )
+
+    payload = resolve_direct_local_response("Summarize the project report")
+    assert payload is None
+
+
+def test_single_match_file_location_query_returns_path(monkeypatch):
+    monkeypatch.setattr(
+        "src.tools.local._plan_local_retrieval",
+        lambda query, file_filter="": {"retrieval_mode": "document_lookup", "response_mode": "snippets"},
+    )
+    monkeypatch.setattr(
+        "src.tools.local._query_documents_table",
+        lambda query, file_filter="": [
+            {
+                "title": "Project report",
+                "file_name": "project_report.md",
+                "source_path": "/tmp/project_report.md",
+                "source_type": "md",
+            }
+        ],
+    )
+
+    payload = resolve_direct_local_response("Which file is the project report?")
+    response = extract_final_response(payload)
+    assert response == "Matched file:\n/tmp/project_report.md"
 
 
 def test_multimodal_search_supplements_lexical_parent_rows(monkeypatch):

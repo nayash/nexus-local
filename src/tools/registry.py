@@ -1,7 +1,11 @@
 from langchain_core.tools import tool
 from datetime import datetime
 from src.tools.search import search_web
-from src.tools.local import resolve_direct_local_response, search_local
+from src.tools.local import (
+    get_nexus_identity_response,
+    resolve_direct_local_response,
+    search_local,
+)
 from src.tools.tabular import (
     load_tabular_dataframe,
     generate_tabular_analysis_code,
@@ -66,6 +70,31 @@ class LocalSearchInput(BaseModel):
         description="The absolute path of a specific file to search within. MUST be a valid, existing path provided in the context (e.g. from `focused_file` state). DO NOT guess or hallucinate paths based on filenames in the query. If the user mentions a filename but has not attached it, include the filename in the `query` field and leave this `file_filter` as an empty string."
     )
 
+
+class LocalFileLookupInput(BaseModel):
+    query: str = Field(
+        description=(
+            "A local file lookup request. Use this to identify, list, or locate files/documents, "
+            "or answer file metadata questions such as title, author, file type, filename, or full document text. "
+            "Do NOT use this to answer questions about the contents or ideas inside documents."
+        )
+    )
+    file_filter: str = Field(
+        default="",
+        description=(
+            "Optional absolute path to restrict lookup to a specific focused file. "
+            "Leave empty unless the user explicitly attached or focused a file."
+        )
+    )
+
+
+class NexusIdentityInput(BaseModel):
+    query: str = Field(
+        description=(
+            "The user's question about Nexus itself, such as identity, mission, capabilities, limitations, privacy, or version."
+        )
+    )
+
 @tool(args_schema=SearchInput, response_format="content_and_artifact")
 def web_search_tool(query: str, category: str = "general", time_range: str = ""):
     """
@@ -97,14 +126,11 @@ def web_search_tool(query: str, category: str = "general", time_range: str = "")
 @tool(args_schema=LocalSearchInput, response_format="content_and_artifact")
 def local_search_tool(query: str, file_filter: str = ""):
     """
-    Search the user's local private documents and files.
-    Use this for questions about "Nexus", "Project", or personal data.
+    Search inside the user's local private document contents.
+    Use this for summaries, explanations, key points, ideas, or answers grounded in document text.
     """
     normalized_file_filter = (file_filter or "").strip() or None
     print(f'calling search_local with query: {query} and file_filter: {normalized_file_filter}')
-    terminal_result = resolve_direct_local_response(query, normalized_file_filter or "")
-    if terminal_result is not None:
-        return terminal_result
 
     results = search_local(query, normalized_file_filter)
     
@@ -150,6 +176,31 @@ def local_search_tool(query: str, file_filter: str = ""):
     context_str = framing_header + context_str
 
     return context_str, source_metadata
+
+
+@tool(args_schema=LocalFileLookupInput, response_format="content_and_artifact")
+def lookup_local_files_tool(query: str, file_filter: str = ""):
+    """
+    Look up local files/documents by metadata.
+    Use this to list, locate, or identify files, and to answer filename/title/author/type/path/full-text requests.
+    """
+    normalized_file_filter = (file_filter or "").strip() or None
+    result = resolve_direct_local_response(query, normalized_file_filter or "")
+    if result is not None:
+        return result
+    return (
+        "This request is about document contents rather than file lookup. Use local_search_tool instead.",
+        [],
+    )
+
+
+@tool(args_schema=NexusIdentityInput, response_format="content_and_artifact")
+def get_nexus_identity_tool(query: str):
+    """
+    Return Nexus's canonical self-profile.
+    Use this for questions about Nexus's identity, mission, capabilities, privacy, limitations, or version.
+    """
+    return get_nexus_identity_response(query)
 
 @tool
 def get_current_time():
@@ -282,4 +333,12 @@ def analyze_tabular_file_tool(file_path: str, user_query: str):
 
 
 # List of tools available to the brain
-TOOLS = [web_search_tool, local_search_tool, get_current_time, analyze_tabular_file_tool, execute_python_code]
+TOOLS = [
+    web_search_tool,
+    local_search_tool,
+    lookup_local_files_tool,
+    get_nexus_identity_tool,
+    get_current_time,
+    analyze_tabular_file_tool,
+    execute_python_code,
+]

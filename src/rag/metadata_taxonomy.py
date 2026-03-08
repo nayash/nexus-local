@@ -105,7 +105,22 @@ def infer_document_kind_from_query(query: str) -> Optional[str]:
     for token in ("script", "scripts", "code"):
         if f" {token} " in lowered:
             return "code"
-    for token in ("notes", "note", "notebook", "notebooks", "memo", "memos", "journal", "journals"):
+    for token in (
+        "document",
+        "documents",
+        "doc",
+        "docs",
+        "file",
+        "files",
+        "notes",
+        "note",
+        "notebook",
+        "notebooks",
+        "memo",
+        "memos",
+        "journal",
+        "journals",
+    ):
         if f" {token} " in lowered:
             return "document"
     return None

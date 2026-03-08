@@ -1,11 +1,13 @@
 import os
 import re
+import json
 from dataclasses import dataclass
 from datetime import date, timedelta
 from functools import lru_cache
 from typing import Optional, Tuple
 
 from langchain_classic.chains.query_constructor.base import AttributeInfo, load_query_constructor_runnable
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.structured_query import (
     Comparator,
     Comparison,
@@ -51,6 +53,23 @@ _ALLOWED_COMPARATORS = {
     Comparator.IN,
     Comparator.LIKE,
 }
+_QUOTED_TEXT_PATTERN = re.compile(r"\"([^\"]{3,140})\"|'([^']{3,140})'")
+_CORRECTIVE_CUE_PATTERN = re.compile(
+    r"\b(i asked you to|i asked for|my question was|i wanted|you were supposed to)\b",
+    re.IGNORECASE,
+)
+_QUERY_NORMALIZER_PROMPT = """You normalize local document retrieval queries.
+
+Return ONLY valid JSON with this exact schema:
+{"clean_query":"string","focus_phrases":["string"],"confidence":"high|medium|low"}
+
+Rules:
+- Remove complaint/meta conversation about assistant behavior.
+- Keep only the actionable retrieval request.
+- Preserve filenames, titles, entities, and quoted targets.
+- If there is an explicit target phrase/title, include it in focus_phrases.
+- Do not invent metadata filters or extra fields.
+"""
 
 
 @dataclass
@@ -72,6 +91,7 @@ class CompiledFilterPlan:
     should_try_relaxed: bool
     strict_clauses: list[FilterClauseDecision]
     dropped_clauses: list[FilterClauseDecision]
+    allow_unfiltered_fallback: bool = True
 
 
 def _today() -> date:
@@ -92,6 +112,15 @@ def _normalize_relative_dates(query: str) -> str:
 
 @lru_cache(maxsize=1)
 def _get_filter_llm():
+    return ChatOllama(
+        model=get_setting("model_name", "llama3.1"),
+        temperature=0,
+        base_url=Config.OLLAMA_BASE_URL,
+    )
+
+
+@lru_cache(maxsize=1)
+def _get_query_normalizer_llm():
     return ChatOllama(
         model=get_setting("model_name", "llama3.1"),
         temperature=0,
@@ -175,6 +204,156 @@ def _get_query_constructor():
     )
 
 
+def _extract_json_object(raw_text: str) -> dict:
+    candidate = (raw_text or "").strip()
+    if not candidate:
+        return {}
+
+    if "{" in candidate and "}" in candidate:
+        start = candidate.find("{")
+        end = candidate.rfind("}") + 1
+        if end > start:
+            candidate = candidate[start:end]
+
+    try:
+        payload = json.loads(candidate)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _normalize_focus_phrase(value: str) -> str:
+    candidate = " ".join((value or "").split()).strip().strip(".,:;!?")
+    if len(candidate) < 3 or len(candidate) > 120:
+        return ""
+    if not re.search(r"[A-Za-z0-9]", candidate):
+        return ""
+    return candidate
+
+
+def _extract_quoted_focus_phrases(query: str) -> list[str]:
+    phrases = []
+    seen = set()
+    for match in _QUOTED_TEXT_PATTERN.finditer(query or ""):
+        raw_phrase = (match.group(1) or match.group(2) or "").strip()
+        phrase = _normalize_focus_phrase(raw_phrase)
+        lowered = phrase.lower()
+        if phrase and lowered not in seen:
+            phrases.append(phrase)
+            seen.add(lowered)
+    return phrases
+
+
+def _coerce_focus_phrases(raw_value) -> list[str]:
+    candidates = []
+    if isinstance(raw_value, str):
+        candidates = [raw_value]
+    elif isinstance(raw_value, list):
+        candidates = [item for item in raw_value if isinstance(item, str)]
+
+    phrases = []
+    seen = set()
+    for item in candidates:
+        phrase = _normalize_focus_phrase(item)
+        lowered = phrase.lower()
+        if phrase and lowered not in seen:
+            phrases.append(phrase)
+            seen.add(lowered)
+    return phrases
+
+
+def _merge_focus_phrases(*phrase_groups: list[str]) -> list[str]:
+    merged = []
+    seen = set()
+    for group in phrase_groups:
+        for phrase in group or []:
+            normalized = _normalize_focus_phrase(phrase)
+            lowered = normalized.lower()
+            if normalized and lowered not in seen:
+                merged.append(normalized)
+                seen.add(lowered)
+    return merged
+
+
+def _deterministic_corrective_rewrite(query: str) -> str:
+    normalized = " ".join((query or "").split()).strip()
+    if not normalized:
+        return ""
+
+    match = _CORRECTIVE_CUE_PATTERN.search(normalized)
+    if not match:
+        return normalized
+
+    tail = normalized[match.end():].strip(" :-,.;")
+    if len(tail.split()) < 2:
+        return normalized
+    return tail
+
+
+def _llm_normalize_query(query: str) -> tuple[str, list[str], str, bool]:
+    messages = [
+        SystemMessage(content=_QUERY_NORMALIZER_PROMPT),
+        HumanMessage(content=query),
+    ]
+    try:
+        response = _get_query_normalizer_llm().invoke(messages)
+    except Exception as exc:
+        print(f"⚠️ Query normalizer failed: {exc}")
+        fallback_query = _deterministic_corrective_rewrite(query) or query
+        fallback_phrases = _extract_quoted_focus_phrases(query)
+        if fallback_query != query:
+            print(f"query normalizer deterministic rewrite | clean_query={fallback_query!r}")
+        return fallback_query, fallback_phrases, "low", False
+
+    payload = _extract_json_object(getattr(response, "content", "") or "")
+    if not payload:
+        print("⚠️ Query normalizer returned invalid JSON; using deterministic fallback.")
+        fallback_query = _deterministic_corrective_rewrite(query) or query
+        fallback_phrases = _extract_quoted_focus_phrases(query)
+        if fallback_query != query:
+            print(f"query normalizer deterministic rewrite | clean_query={fallback_query!r}")
+        return fallback_query, fallback_phrases, "low", False
+
+    clean_query = " ".join(str(payload.get("clean_query", "") or "").split()).strip() or query
+    focus_phrases = _coerce_focus_phrases(payload.get("focus_phrases"))
+    if not focus_phrases and isinstance(payload.get("focus_phrase"), str):
+        focus_phrases = _coerce_focus_phrases(payload.get("focus_phrase"))
+
+    confidence = str(payload.get("confidence", "low") or "low").strip().lower()
+    if confidence not in {"high", "medium", "low"}:
+        confidence = "low"
+
+    return clean_query, focus_phrases, confidence, True
+
+
+def _build_focus_phrase_filter(phrases: list[str]):
+    if not phrases:
+        return None
+
+    phrase_filters = []
+    for phrase in phrases:
+        like_value = f"%{phrase}%"
+        comparisons = [
+            Comparison(comparator=Comparator.LIKE, attribute="title", value=like_value),
+            Comparison(comparator=Comparator.LIKE, attribute="file_name", value=like_value),
+            Comparison(comparator=Comparator.LIKE, attribute="source_path", value=like_value),
+        ]
+        if re.search(r"\.[A-Za-z0-9]{1,8}$", phrase):
+            comparisons.insert(
+                0,
+                Comparison(comparator=Comparator.EQ, attribute="file_name", value=phrase),
+            )
+        phrase_filters.append(
+            comparisons[0]
+            if len(comparisons) == 1
+            else Operation(operator=Operator.OR, arguments=comparisons)
+        )
+
+    if len(phrase_filters) == 1:
+        return phrase_filters[0]
+    return Operation(operator=Operator.AND, arguments=phrase_filters)
+
+
 def _fallback_structured_filter(query: str):
     lowered = query.lower()
     filters = []
@@ -239,8 +418,8 @@ def _comparison_confidence(comparison: Comparison, original_query: str) -> tuple
     value_str = _stringify_filter_value(comparison.value).lower()
     query_lower = original_query.lower()
 
-    if attribute in {"source_path", "workspace_id", "file_name"}:
-        return "high", "Explicit file/workspace constraint"
+    if attribute in {"source_path", "workspace_id", "file_name", "title"}:
+        return "high", "Explicit file/workspace/title constraint"
 
     if attribute == "source_mtime_date":
         if _has_explicit_date(original_query):
@@ -441,19 +620,43 @@ def _build_structured_query_with_decisions(
     workspace_id: Optional[str] = None,
 ) -> tuple[object, str, Optional[str], list[FilterClauseDecision]]:
     normalized_query = _normalize_relative_dates(query)
+    preprocessed_query = _deterministic_corrective_rewrite(normalized_query) or normalized_query
+    if preprocessed_query != normalized_query:
+        print(
+            "query deterministic rewrite | "
+            f"original={normalized_query!r} | rewritten={preprocessed_query!r}"
+        )
     structured_query = None
     decisions: list[FilterClauseDecision] = []
+    quoted_focus_phrases = _extract_quoted_focus_phrases(normalized_query)
+    llm_normalized_query = preprocessed_query
+    llm_focus_phrases: list[str] = []
+    llm_confidence = "low"
 
     try:
-        structured_query = _get_query_constructor().invoke({"query": normalized_query})
+        structured_query = _get_query_constructor().invoke({"query": preprocessed_query})
     except Exception as exc:
         print(f"⚠️ Self-query constructor failed, using fallback metadata parsing: {exc}")
+        llm_normalized_query, llm_focus_phrases, llm_confidence, used_llm_normalizer = _llm_normalize_query(preprocessed_query)
+        if used_llm_normalizer:
+            print(
+                "query normalizer resolved | "
+                f"clean_query={llm_normalized_query!r} | "
+                f"focus_phrases={llm_focus_phrases!r} | confidence={llm_confidence}"
+            )
+        else:
+            llm_normalized_query = preprocessed_query
 
     if structured_query is None:
-        structured_query = _FallbackStructuredQuery(normalized_query)
+        structured_query = _FallbackStructuredQuery(llm_normalized_query)
 
     if not getattr(structured_query, "filter", None):
-        structured_query.filter = _fallback_structured_filter(normalized_query)
+        structured_query.filter = _fallback_structured_filter(llm_normalized_query)
+
+    focus_phrases = _merge_focus_phrases(quoted_focus_phrases, llm_focus_phrases)
+    focus_phrase_filter = _build_focus_phrase_filter(focus_phrases)
+    if focus_phrases:
+        print(f"query focus phrases: {focus_phrases}")
 
     extra_filters = []
     if file_filter:
@@ -472,6 +675,8 @@ def _build_structured_query_with_decisions(
                 value=workspace_id,
             )
         )
+    if focus_phrase_filter is not None:
+        extra_filters.append(focus_phrase_filter)
 
     base_filter = getattr(structured_query, "filter", None)
     all_filters = [item for item in ([base_filter] + extra_filters) if item is not None]
@@ -480,7 +685,7 @@ def _build_structured_query_with_decisions(
     normalized_filter = _normalize_filter_tree(final_filter, query, decisions)
     structured_query.filter = normalized_filter
 
-    text_query = (structured_query.query or normalized_query or "").strip() or normalized_query
+    text_query = (str(structured_query.query or "") or llm_normalized_query or preprocessed_query).strip() or normalized_query
     sql_filter = _compile_sql_filter(structured_query)
 
     clause_summary = [
@@ -528,6 +733,9 @@ def compile_multimodal_filter_plan(
 
     strict_filter = getattr(structured_query, "filter", None)
     strict_clauses = [item for item in decisions if not item.dropped]
+    precision_attributes = {"source_path", "workspace_id", "file_name", "title"}
+    has_high_precision_filter = any(item.attribute in precision_attributes for item in strict_clauses)
+    allow_unfiltered_fallback = not has_high_precision_filter
     if strict_filter is None:
         return CompiledFilterPlan(
             text_query=text_query,
@@ -536,6 +744,7 @@ def compile_multimodal_filter_plan(
             should_try_relaxed=False,
             strict_clauses=strict_clauses,
             dropped_clauses=[],
+            allow_unfiltered_fallback=True,
         )
 
     low_confidence_signatures = {
@@ -551,6 +760,7 @@ def compile_multimodal_filter_plan(
             should_try_relaxed=False,
             strict_clauses=strict_clauses,
             dropped_clauses=[],
+            allow_unfiltered_fallback=allow_unfiltered_fallback,
         )
 
     relaxed_filter = _relax_filter_tree(strict_filter, low_confidence_signatures)
@@ -566,7 +776,7 @@ def compile_multimodal_filter_plan(
     print(
         "self-query filter-plan | "
         f"strict={strict_sql_filter!r} | relaxed={relaxed_sql_filter!r} | "
-        f"dropped_low_conf={len(dropped_clauses)}"
+        f"dropped_low_conf={len(dropped_clauses)} | allow_unfiltered={allow_unfiltered_fallback}"
     )
 
     return CompiledFilterPlan(
@@ -576,6 +786,7 @@ def compile_multimodal_filter_plan(
         should_try_relaxed=should_try_relaxed,
         strict_clauses=strict_clauses,
         dropped_clauses=dropped_clauses,
+        allow_unfiltered_fallback=allow_unfiltered_fallback,
     )
 
 

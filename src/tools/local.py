@@ -60,6 +60,50 @@ _EXISTENCE_QUERY_HINTS = (
     "list",
     "any",
 )
+_INVENTORY_QUERY_PATTERNS = (
+    re.compile(r"\b(which|what|list|show)\s+(files|file names|filenames|documents|docs|notes|notebooks)\b"),
+    re.compile(r"\b(do i have|did i have|are there|is there)\s+any\s+(files|documents|docs|notes|notebooks)\b"),
+    re.compile(r"\bmatching\s+(files|documents|docs|notes|notebooks)\b"),
+)
+_LOCATE_QUERY_PATTERNS = (
+    re.compile(r"\b(which|what)\s+file\b"),
+    re.compile(r"\bwhere\s+(is|are)\b"),
+    re.compile(r"\bfind\s+the\s+file\b"),
+    re.compile(r"\bmatched\s+file\b"),
+)
+_FULL_DOCUMENT_QUERY_HINTS = (
+    "full content",
+    "full text",
+    "entire file",
+    "entire document",
+    "whole file",
+    "whole document",
+    "complete file",
+    "complete document",
+)
+_CONTENT_QUERY_HINTS = (
+    "summarize",
+    "summary",
+    "explain",
+    "analyze",
+    "describe",
+    "extract",
+    "quote",
+    "tell me",
+    "give me",
+    "show me",
+    "list down",
+    "key points",
+    "writing ideas",
+    "ideas i had",
+    "what did i",
+    "from my notes",
+    "from my files",
+    "from my documents",
+    "in my notes",
+    "in my files",
+    "in my documents",
+)
 _SELF_IDENTITY_QUERY_HINTS = (
     "who are you",
     "what are you",
@@ -146,6 +190,60 @@ def _is_existence_or_list_query(query: str) -> bool:
     has_hint = any(hint in normalized for hint in _EXISTENCE_QUERY_HINTS)
     has_target = any(token in normalized for token in ("idea", "ideas", "game", "book", "file", "files", "note", "notes"))
     return has_hint and has_target
+
+
+def _is_explicit_document_inventory_query(query: str) -> bool:
+    normalized = _normalize_for_match(query)
+    return any(pattern.search(normalized) for pattern in _INVENTORY_QUERY_PATTERNS)
+
+
+def _is_explicit_file_location_query(query: str) -> bool:
+    normalized = _normalize_for_match(query)
+    return any(pattern.search(normalized) for pattern in _LOCATE_QUERY_PATTERNS)
+
+
+def _is_content_extraction_query(query: str) -> bool:
+    normalized = _normalize_for_match(query)
+    if not normalized:
+        return False
+    if _is_explicit_document_inventory_query(normalized) or _is_explicit_file_location_query(normalized):
+        return False
+    return any(hint in normalized for hint in _CONTENT_QUERY_HINTS)
+
+
+def _wants_full_document(query: str) -> bool:
+    normalized = _normalize_for_match(query)
+    return any(hint in normalized for hint in _FULL_DOCUMENT_QUERY_HINTS)
+
+
+def _document_metadata_answer(query: str, match: dict) -> Optional[str]:
+    normalized = _normalize_for_match(query)
+    source_path = os.path.abspath(match.get("source_path") or "")
+    file_name = match.get("file_name") or os.path.basename(source_path)
+    source_type = (match.get("source_type") or _source_type_from_path(source_path)).lower()
+
+    if "author" in normalized or "who wrote" in normalized or "written by" in normalized:
+        author = str(match.get("author") or "").strip()
+        if author:
+            return f"Author: {author}"
+        return "The matched file does not have indexed author metadata."
+
+    if "title" in normalized:
+        title = str(match.get("title") or "").strip()
+        if title:
+            return f"Title: {title}"
+        return f"Title: {file_name}"
+
+    if "filename" in normalized or "file name" in normalized:
+        return f"File name: {file_name}"
+
+    if "type" in normalized or "format" in normalized or "extension" in normalized:
+        return f"File type: {source_type}"
+
+    if _is_explicit_file_location_query(normalized):
+        return f"Matched file:\n{source_path}"
+
+    return None
 
 
 def _looks_like_identity_path(path: str) -> bool:
@@ -743,6 +841,40 @@ def _load_full_text(source_path: str, source_type: str) -> str:
     return _reconstruct_text_from_index(abs_path)
 
 
+def get_nexus_identity_path() -> str:
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(current_dir, "..", ".."))
+    return os.path.join(project_root, "data", _IDENTITY_FILE_NAME)
+
+
+def get_nexus_identity_response(query: str = "") -> tuple[str, list[dict]]:
+    identity_path = get_nexus_identity_path()
+    abs_path = os.path.abspath(identity_path)
+    metadata = [{
+        "title": _source_title(abs_path, "txt"),
+        "url": abs_path,
+        "type": "local",
+    }]
+
+    if not os.path.exists(abs_path):
+        return (
+            "The Nexus identity file is not available.",
+            metadata,
+        )
+
+    identity_text = _load_full_text(abs_path, "txt")
+    direct_answer = _build_identity_answer(query, identity_text)
+    if direct_answer:
+        return "", metadata + [build_final_response_artifact(direct_answer)]
+
+    framing_header = (
+        "The following content is Nexus's canonical self-profile. "
+        "Answer the user's question using this profile only.\n"
+        "─────────────────────────────────────────\n"
+    )
+    return framing_header + identity_text, metadata
+
+
 def _query_documents_table(query: str, file_filter: str = "") -> list[dict]:
     normalized_file_filter = (file_filter or "").strip() or None
     structured_query, _, _ = build_multimodal_structured_query(
@@ -837,20 +969,16 @@ def resolve_direct_local_response(
     query: str, file_filter: str = ""
 ) -> Optional[tuple[str, list[dict]]]:
     normalized_file_filter = (file_filter or "").strip()
-    is_existence_query = _is_existence_or_list_query(query)
-    plan = _plan_local_retrieval(query, normalized_file_filter)
-    if is_existence_query:
-        # Existence/list queries should always use document metadata lookup.
-        plan = {"retrieval_mode": "document_lookup", "response_mode": "snippets"}
-    if plan["retrieval_mode"] != "document_lookup":
+    is_inventory_query = _is_explicit_document_inventory_query(query)
+    wants_full_content = _wants_full_document(query)
+
+    if not is_inventory_query and not wants_full_content and _is_content_extraction_query(query):
         return None
 
     matches = _query_documents_table(query, normalized_file_filter)
-    wants_full_content = plan["response_mode"] == "full_document"
-
     metadata = _build_source_metadata(matches)
 
-    if is_existence_query:
+    if is_inventory_query:
         listing = _build_existence_listing_response(matches, query)
         return "", metadata + [build_final_response_artifact(listing)]
 
@@ -879,7 +1007,10 @@ def resolve_direct_local_response(
             identity_answer = _build_identity_answer(query, identity_text)
             if identity_answer:
                 return "", metadata + [build_final_response_artifact(identity_answer)]
-        return "", metadata + [build_final_response_artifact(f"Matched file:\n{source_path}")]
+        metadata_answer = _document_metadata_answer(query, match)
+        if metadata_answer:
+            return "", metadata + [build_final_response_artifact(metadata_answer)]
+        return None
 
     source_type = (match.get("source_type") or _source_type_from_path(source_path)).lower()
     if source_type == "image":
@@ -948,17 +1079,23 @@ def search_local(query: str, file_filter: str = "") -> List[SearchResult]:
 
 def _search_multimodal_results(query: str, file_filter: str = None, top_k: int = 10) -> List[SearchResult]:
     rows = search_multimodal(query, top_k=top_k, file_filter=file_filter) or []
-    if _should_apply_lexical_supplement(query):
+    semantic_query = query
+    if rows:
+        semantic_query = str(rows[0].get("_semantic_query") or query)
+        if semantic_query.strip() != (query or "").strip():
+            print(f"local rerank query | original={query!r} | effective={semantic_query!r}")
+
+    if _should_apply_lexical_supplement(semantic_query):
         rows = _supplement_with_lexical_parent_rows(
             rows,
-            query=query,
+            query=semantic_query,
             file_filter=file_filter or "",
             limit=min(max(top_k, 4), 12),
         )
     if not rows:
         return []
     # Keep context focused by reranking and deduplicating per source file.
-    rows = _rerank_and_filter_rows(rows, query=query, top_k=min(top_k, 5))
+    rows = _rerank_and_filter_rows(rows, query=semantic_query, top_k=min(top_k, 5))
 
     results = []
     for row in rows:

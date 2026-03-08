@@ -11,6 +11,8 @@ _cached_graph = None
 _TOOL_ARTIFACT_NAMES = {
     "web_search_tool",
     "local_search_tool",
+    "lookup_local_files_tool",
+    "get_nexus_identity_tool",
     "get_current_time",
     "analyze_tabular_file_tool",
     "execute_python_code",
@@ -334,7 +336,7 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
                         else:
                             print(
                                 f"[RAG {trace_id}] candidate_discarded | phase={phase or 'unknown'} | "
-                                "reason=phase_blocked"
+                                "reason=decision_phase_non_user_visible"
                             )
 
         elif kind == "on_tool_end":
@@ -349,6 +351,22 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
 
             metadata = extract_artifacts(data.get("artifact")) or extract_artifacts(output)
             print(f"[RAG {trace_id}] tool_artifacts | count={len(metadata)}")
+            if metadata:
+                source_preview = []
+                for item in metadata:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") in {"plot", "final_response"}:
+                        continue
+                    title = str(item.get("title") or "").strip()
+                    url = str(item.get("url") or "").strip()
+                    if not title and not url:
+                        continue
+                    source_preview.append(f"{title} -> {url}")
+                    if len(source_preview) >= 5:
+                        break
+                if source_preview:
+                    print(f"[RAG {trace_id}] tool_sources | {' | '.join(source_preview)}")
 
             if metadata:
                 final_response = find_final_response_artifact(metadata)

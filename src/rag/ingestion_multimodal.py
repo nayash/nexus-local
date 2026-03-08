@@ -992,6 +992,8 @@ def search_multimodal(query: str, top_k: int = 5, file_filter: Optional[str] = N
     query_text_heavy = _query_is_text_heavy(query)
     plan = compile_multimodal_filter_plan(query, file_filter=file_filter, workspace_id=workspace_id)
     semantic_query = plan.text_query
+    if semantic_query.strip() != (query or "").strip():
+        print(f"local retrieval normalized query | original={query!r} | semantic={semantic_query!r}")
 
     nomic_pool = max(top_k * 3, top_k) if query_text_heavy else max(top_k * 2, top_k)
     clip_pool = max(top_k * 3, top_k) if query_prefers_images else max(top_k * 2, top_k)
@@ -1009,8 +1011,10 @@ def search_multimodal(query: str, top_k: int = 5, file_filter: Optional[str] = N
     attempts: list[tuple[str, Optional[str]]] = [("strict", plan.strict_sql_filter)]
     if plan.should_try_relaxed:
         attempts.append(("relaxed", plan.relaxed_sql_filter))
-    if attempts[-1][1] is not None:
+    if plan.allow_unfiltered_fallback and attempts[-1][1] is not None:
         attempts.append(("unfiltered", None))
+    elif not plan.allow_unfiltered_fallback:
+        print("local retrieval fallback blocked | reason=high_precision_filter")
 
     child_hits = []
     for label, sql_filter in attempts:
@@ -1069,5 +1073,6 @@ def search_multimodal(query: str, top_k: int = 5, file_filter: Optional[str] = N
         extra["matched_text"] = child.get("text", "")
         parent["extra"] = json.dumps(extra, ensure_ascii=True)
         parent["_score"] = item["score"]
+        parent["_semantic_query"] = semantic_query
         results.append(parent)
     return results

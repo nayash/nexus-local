@@ -278,6 +278,34 @@ class TestMultimodalSetup:
         assert len(results) == 1
         assert results[0]["parent_id"] == parent_id_text
 
+    def test_search_multimodal_skips_unfiltered_retry_for_high_precision_filter(self, monkeypatch):
+        attempts = []
+
+        monkeypatch.setattr(
+            ingestion_multimodal,
+            "compile_multimodal_filter_plan",
+            lambda query, file_filter=None, workspace_id=None: CompiledFilterPlan(
+                text_query="list down writing tips",
+                strict_sql_filter="title LIKE '%Writing tips%'",
+                relaxed_sql_filter=None,
+                should_try_relaxed=False,
+                strict_clauses=[],
+                dropped_clauses=[],
+                allow_unfiltered_fallback=False,
+            ),
+        )
+
+        def fake_pass(*, label, semantic_query, sql_filter, nomic_pool, clip_pool):
+            attempts.append((label, sql_filter))
+            return []
+
+        monkeypatch.setattr(ingestion_multimodal, "_run_semantic_retrieval_pass", fake_pass)
+        monkeypatch.setattr(ingestion_multimodal, "_lexical_source_path_filter", lambda *args, **kwargs: None)
+
+        results = ingestion_multimodal.search_multimodal("list down writing tips", top_k=5)
+        assert results == []
+        assert attempts == [("strict", "title LIKE '%Writing tips%'")]
+
     def test_compile_multimodal_filter_fallbacks_for_common_metadata_queries(self, monkeypatch):
         monkeypatch.setattr("src.rag.query_filters._get_query_constructor", lambda: (_ for _ in ()).throw(RuntimeError("no llm")))
 
