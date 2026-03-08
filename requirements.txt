@@ -32,3 +32,14 @@ lark
 
 # Docker Sandbox (optional — only needed if CODE_SANDBOX_ENGINE=docker)
 docker>=7.0.0
+
+# Multimodal local RAG (optional)
+onnxruntime-gpu
+transformers
+tokenizers
+Pillow
+# Provides the `fitz` import
+PyMuPDF
+# Provides the `docx` import
+python-docx
+beautifulsoup4

@@ -282,4 +282,6 @@ class TestToolRegistration:
         tool_names = [t.name for t in TOOLS]
         assert "web_search_tool" in tool_names
         assert "local_search_tool" in tool_names
+        assert "lookup_local_files_tool" in tool_names
+        assert "get_nexus_identity_tool" in tool_names
         assert "get_current_time" in tool_names

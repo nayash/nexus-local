@@ -55,7 +55,7 @@ async def main(page: ft.Page):
     # Initialize StartupView
     print(f'startupView adding')
     
-    start_view = StartupView(page, on_success=on_startup_success, is_dev=True)
+    start_view = StartupView(page, on_success=on_startup_success, is_dev=False)
     start_view.expand = True 
     
     page.add(start_view)

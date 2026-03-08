@@ -37,10 +37,17 @@ def init_db():
             chat_id TEXT NOT NULL,
             role TEXT NOT NULL,
             content TEXT NOT NULL,
+            reasoning_content TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (chat_id) REFERENCES chats (id)
         )
     ''')
+
+    # Backward-compatible migration for older DBs without reasoning_content.
+    cursor.execute("PRAGMA table_info(messages)")
+    message_columns = [row[1] for row in cursor.fetchall()]
+    if "reasoning_content" not in message_columns:
+        cursor.execute("ALTER TABLE messages ADD COLUMN reasoning_content TEXT")
 
     # Watched Paths Table
     cursor.execute('''
@@ -114,13 +121,13 @@ class ChatRepository:
         conn.close()
         return dict(row) if row else None
 
-    def add_message(self, chat_id: str, role: str, content: str):
+    def add_message(self, chat_id: str, role: str, content: str, reasoning_content: Optional[str] = None):
         """Adds a message to a chat."""
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-            (chat_id, role, content, datetime.datetime.now())
+            "INSERT INTO messages (chat_id, role, content, reasoning_content, created_at) VALUES (?, ?, ?, ?, ?)",
+            (chat_id, role, content, reasoning_content, datetime.datetime.now())
         )
         conn.commit()
         conn.close()
@@ -152,6 +159,30 @@ class ChatRepository:
         rows = cursor.fetchall()
         conn.close()
         return [{"role": row["role"], "content": row["content"]} for row in rows]
+
+    def get_last_assistant_reasoning(self, chat_id: str) -> Optional[str]:
+        """Returns the latest non-empty assistant reasoning summary for a chat."""
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT reasoning_content
+            FROM messages
+            WHERE chat_id = ?
+              AND role = 'assistant'
+              AND reasoning_content IS NOT NULL
+              AND TRIM(reasoning_content) != ''
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (chat_id,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return None
+        return row["reasoning_content"]
 
     def get_recent_chats(self, limit: int = 50) -> List[Dict]:
         """Retrieves a list of recent chats."""

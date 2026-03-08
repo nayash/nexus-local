@@ -1,68 +1,88 @@
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode, tools_condition
 
-from src.agents.state import AgentState
-# from src.agents.nodes import web_search_node, generate_node, local_search_node
 from src.agents.nodes import agent_node
-from src.agents.router import route_question
+from src.agents.nodes_v2 import (
+    identity_worker_node,
+    local_retrieval_worker_node,
+    manager_intent_node,
+    manager_review_node,
+    response_synthesizer_node,
+    route_manager_next,
+    tabular_worker_node,
+    web_retrieval_worker_node,
+)
+from src.agents.state import AgentState
+from src.core.config import Config
 from src.tools.registry import TOOLS
+from src.tools.tool_results import extract_final_response
 
-# def build_graph_old():
-#     """
-#     Constructs the branching LangGraph workflow.
-#     """
-#     workflow = StateGraph(AgentState)
-    
-#     # 1. Add Nodes
-#     workflow.add_node("web_search", web_search_node)
-#     workflow.add_node("local_search", local_search_node)
-#     workflow.add_node("generate", generate_node)
-    
-#     # 2. Define Entry Point (The Router)
-#     # Instead of pointing to a node, we point to a conditional function
-#     workflow.set_conditional_entry_point(
-#         route_question,
-#         {
-#             # Mapper: Output of route_question -> Node Name
-#             "web_search": "web_search",
-#             "local_search": "local_search",
-#             "generate": "generate",
-#         }
-#     )
-    
-#     # 3. Define Standard Edges
-#     # If we searched, we ALWAYS go to generate afterwards
-#     workflow.add_edge("web_search", "generate")
-#     workflow.add_edge("local_search", "generate")
-    
-#     # If we generated, we end
-#     workflow.add_edge("generate", END)
-    
-#     return workflow.compile()
+def route_after_tools(state: AgentState):
+    messages = state.get("messages") or []
+    latest = messages[-1] if messages else None
+    if extract_final_response(latest) is not None:
+        return END
+    return "agent"
 
-def build_graph():
+
+def build_legacy_graph():
     workflow = StateGraph(AgentState)
-    
-    # 1. Define Nodes
     workflow.add_node("agent", agent_node)
-    
-    # ToolNode is a prebuilt worker that executes the function requested by the LLM
     workflow.add_node("tools", ToolNode(TOOLS))
-    
-    # 2. Define Entry Point
     workflow.set_entry_point("agent")
-    
-    # 3. Define The Loop (The "ReAct" Pattern)
-    
-    # After the Agent runs, we check 'tools_condition':
-    # - If Agent requested a tool -> Go to 'tools' node
-    # - If Agent replied with text -> Go to END
     workflow.add_conditional_edges(
         "agent",
         tools_condition,
     )
-    
-    # After Tools run, ALWAYS go back to Agent to interpret the results
-    workflow.add_edge("tools", "agent")
-    
+    workflow.add_conditional_edges(
+        "tools",
+        route_after_tools,
+    )
     return workflow.compile()
+
+
+def build_manager_v2_graph():
+    workflow = StateGraph(AgentState)
+    workflow.add_node("manager_intent", manager_intent_node)
+    workflow.add_node("local_retrieval_worker", local_retrieval_worker_node)
+    workflow.add_node("web_retrieval_worker", web_retrieval_worker_node)
+    workflow.add_node("identity_worker", identity_worker_node)
+    workflow.add_node("tabular_worker", tabular_worker_node)
+    workflow.add_node("manager_review", manager_review_node)
+    workflow.add_node("response_synthesizer", response_synthesizer_node)
+
+    workflow.set_entry_point("manager_intent")
+    workflow.add_conditional_edges(
+        "manager_intent",
+        route_manager_next,
+        {
+            "local_retrieval_worker": "local_retrieval_worker",
+            "web_retrieval_worker": "web_retrieval_worker",
+            "identity_worker": "identity_worker",
+            "tabular_worker": "tabular_worker",
+            "response_synthesizer": "response_synthesizer",
+        },
+    )
+    workflow.add_edge("local_retrieval_worker", "manager_review")
+    workflow.add_edge("web_retrieval_worker", "manager_review")
+    workflow.add_edge("identity_worker", "manager_review")
+    workflow.add_edge("tabular_worker", "manager_review")
+    workflow.add_conditional_edges(
+        "manager_review",
+        route_manager_next,
+        {
+            "local_retrieval_worker": "local_retrieval_worker",
+            "web_retrieval_worker": "web_retrieval_worker",
+            "identity_worker": "identity_worker",
+            "tabular_worker": "tabular_worker",
+            "response_synthesizer": "response_synthesizer",
+        },
+    )
+    workflow.add_edge("response_synthesizer", END)
+    return workflow.compile()
+
+
+def build_graph():
+    if Config.RAG_PIPELINE_VERSION == "manager_v2":
+        return build_manager_v2_graph()
+    return build_legacy_graph()

@@ -1,6 +1,7 @@
 import asyncio
 import os
 import base64
+import re
 import flet as ft
 from styles import ColorPalette, TextStyles
 from src.core.config import Config
@@ -30,6 +31,56 @@ class ChatView(ft.Container):
         self._processing_chat_id = None
         self._streaming_bot_message_control = None
         self._streaming_response_buffer = ""
+
+    @staticmethod
+    def _strip_think_content(text: str) -> str:
+        """
+        Remove reasoning-tag markup robustly for display/storage.
+        - Removes all well-formed <think>...</think> blocks.
+        - If <think> is unclosed, drops everything after it.
+        - If stray </think> appears, drops only that tag.
+        """
+        cleaned = text or ""
+        if not cleaned:
+            return ""
+
+        lower = cleaned.lower()
+        out_parts = []
+        cursor = 0
+        close_tag = "</think>"
+
+        while cursor < len(cleaned):
+            open_idx = lower.find("<think", cursor)
+            close_idx = lower.find(close_tag, cursor)
+
+            if open_idx == -1 and close_idx == -1:
+                out_parts.append(cleaned[cursor:])
+                break
+
+            if close_idx != -1 and (open_idx == -1 or close_idx < open_idx):
+                out_parts.append(cleaned[cursor:close_idx])
+                cursor = close_idx + len(close_tag)
+                continue
+
+            out_parts.append(cleaned[cursor:open_idx])
+            open_end = lower.find(">", open_idx)
+            if open_end == -1:
+                break
+
+            close_after_open = lower.find(close_tag, open_end + 1)
+            if close_after_open == -1:
+                break
+
+            cursor = close_after_open + len(close_tag)
+
+        cleaned = "".join(out_parts)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
+
+    @staticmethod
+    def _clean_assistant_text_for_storage(text: str) -> str:
+        """Persist only final user-visible answer text (no reasoning tags)."""
+        return ChatView._strip_think_content(text)
 
     def build_content(self):
         # File Viewer Dialog
@@ -64,7 +115,7 @@ class ChatView(ft.Container):
         
         # Add some dummy messages if history is empty
         # self.add_message("Hello! I am Nexus. How can I help you today?", is_user=False)
-        self.add_message("Nexus is ready. Ask me anything.", is_user=False)
+        self.add_message("Nexus is ready. Ask me anything. I keep the answers useful and the jokes light.", is_user=False)
 
         self.input_field = ft.TextField(
             hint_text="Ask anything...",
@@ -144,7 +195,7 @@ class ChatView(ft.Container):
         self.current_chat_id = None
         print(f"current_chat_id set to: {self.current_chat_id}")
         self.chat_history.controls.clear()
-        self.add_message("Nexus is ready. Ask me anything.", is_user=False)
+        self.add_message("Nexus is ready. Ask me anything. I keep the answers useful and the jokes light.", is_user=False)
         self._safe_update_chat_history()
 
     def load_chat(self, chat_id):
@@ -266,18 +317,12 @@ class ChatView(ft.Container):
         except Exception as e:
             print(f"Error generating title: {e}")
     
-    def _is_file_already_indexed(self, file_path: str, table_name: str = "documents") -> bool:
-        """Check if this file path already has entries in the vector DB, to avoid re-ingestion."""
+    def _is_file_already_indexed(self, file_path: str) -> bool:
+        """Check if this file path is already present in the multimodal registry."""
         try:
-            from src.rag.storage import get_table, get_source_field_for_table
-            abs_path = os.path.abspath(file_path)
-            tbl = get_table(table_name)
-            if tbl is None:
-                return False
-            source_field = get_source_field_for_table(tbl)
-            # Query for at least one row with this source path
-            results = tbl.search().where(f"{source_field} = '{abs_path}'", prefilter=True).limit(1).to_list()
-            return len(results) > 0
+            from src.rag.ingestion_multimodal import is_source_indexed_multimodal
+
+            return is_source_indexed_multimodal(file_path)
         except Exception as ex:
             print(f"Error checking if file indexed: {ex}")
             return False  # On error, assume not indexed so we ingest safely
@@ -303,7 +348,7 @@ class ChatView(ft.Container):
                 # Ingest quietly
                 from src.rag.ingestion import ingest_file
                 
-                success, msg, _ = ingest_file(file_path, table_name="documents")
+                success, msg, _ = ingest_file(file_path, strategy="multimodal")
                 
                 if success:
                     self.app_page.data["focused_file"] = file_path
@@ -420,8 +465,10 @@ class ChatView(ft.Container):
         try:
             # Prepare context (include focused_file if available in page.data)
             print(f'chat_view: focused_file: {self.app_page.data.get("focused_file")}')
+            previous_reasoning = self.repo.get_last_assistant_reasoning(origin_chat_id)
             context = {
-                "focused_file": self.app_page.data.get("focused_file")
+                "focused_file": self.app_page.data.get("focused_file"),
+                "last_assistant_reasoning": previous_reasoning or "",
             }
             
             # Fetch limited history for context (Sliding Window: last 20 messages)
@@ -442,7 +489,13 @@ class ChatView(ft.Container):
                     self._safe_update_chat_history()
             
             # --- Persistence of Bot Response ---
-            self.repo.add_message(origin_chat_id, "assistant", full_response)
+            cleaned_response = self._clean_assistant_text_for_storage(full_response)
+            self.repo.add_message(
+                origin_chat_id,
+                "assistant",
+                cleaned_response or full_response,
+                reasoning_content=(context.get("last_turn_reasoning") or ""),
+            )
                 
         except Exception as ex:
             import traceback
@@ -466,6 +519,11 @@ class ChatView(ft.Container):
         Updated for Streaming: Handles open <think> tags gracefully.
         """
         import re
+
+        def normalize_think_tags(raw_text: str) -> str:
+            normalized = raw_text.replace("&lt;think&gt;", "<think>")
+            normalized = normalized.replace("&lt;/think&gt;", "</think>")
+            return normalized
 
         def append_rich_content(target_controls, chunk_text):
             plot_pattern = re.compile(r'<nexus-plot(?: mime="([^"]+)")?>(.*?)</nexus-plot>', re.DOTALL)
@@ -529,6 +587,16 @@ class ChatView(ft.Container):
             # Type Safety Check
             if not isinstance(text, str):
                 text = str(text)
+            text = normalize_think_tags(text)
+
+            # Guardrail: malformed or repeated think tags should never leak into
+            # visible answer text.
+            think_open_count = len(re.findall(r"<think\b[^>]*>", text, flags=re.IGNORECASE))
+            think_close_count = len(re.findall(r"</think>", text, flags=re.IGNORECASE))
+            if think_open_count > 1 or think_close_count > 1 or (think_open_count != think_close_count):
+                sanitized = self._strip_think_content(text)
+                append_rich_content(controls, sanitized)
+                return ft.Column(controls=controls, spacing=5, tight=True)
 
             # Strip wrapping code fences that some models accidentally add
             # e.g. ```\nThe answer is...\n``` → The answer is...
@@ -546,7 +614,7 @@ class ChatView(ft.Container):
             # 1. Check for <think> block
             # We only handle ONE think block for now (standard for R1/DeepSeek)
             # Regex to find the start of the block
-            start_match = re.search(r'<think>', text)
+            start_match = re.search(r'<think\b[^>]*>', text, flags=re.IGNORECASE)
             
             if start_match:
                 # A. Content BEFORE the think block
@@ -557,7 +625,7 @@ class ChatView(ft.Container):
                 # B. The Think Block
                 # Check if it is closed
                 remainder = text[start_match.end():]
-                end_match = re.search(r'</think>', remainder)
+                end_match = re.search(r'</think>', remainder, flags=re.IGNORECASE)
                 
                 if end_match:
                     # Closed thought
@@ -577,7 +645,6 @@ class ChatView(ft.Container):
                                             code_theme="atom-one-dark"
                                         )
                                     ],
-                                    # initially_expanded=False,
                                     bgcolor=ft.Colors.TRANSPARENT,
                                     collapsed_bgcolor=ft.Colors.TRANSPARENT,
                                     text_color=ColorPalette.TEXT_SECONDARY,
@@ -593,32 +660,9 @@ class ChatView(ft.Container):
                     if post_text:
                          append_rich_content(controls, post_text)
                 else:
-                    # Open thought (Streaming in progress)
-                    thought_text = remainder.strip()
-                    if thought_text:
-                         controls.append(
-                            ft.Container(
-                                content=ft.ExpansionTile(
-                                    title=ft.Text("Thinking...", size=12, italic=True, color=ColorPalette.ACCENT),
-                                    controls=[
-                                        ft.Markdown(
-                                            thought_text + " █", # Cursor effect
-                                            selectable=True,
-                                            extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-                                            code_theme="atom-one-dark"
-                                        )
-                                    ],
-                                    # initially_expanded=True, # Auto-expand while thinking
-                                    bgcolor=ft.Colors.TRANSPARENT,
-                                    collapsed_bgcolor=ft.Colors.TRANSPARENT,
-                                    text_color=ColorPalette.ACCENT,
-                                    controls_padding=ft.padding.only(left=10, bottom=10),
-                                ),
-                                border=ft.border.all(1, ColorPalette.ACCENT), 
-                                border_radius=10,
-                                margin=ft.margin.only(top=5, bottom=5)
-                            )
-                        )
+                    # Broken/unclosed think block: keep only pre-think content.
+                    # Never render in-progress reasoning text in the main answer.
+                    pass
             
             else:
                 # No think block, just regular markdown

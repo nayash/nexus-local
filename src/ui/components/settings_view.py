@@ -261,7 +261,7 @@ class SettingsView(ft.Container):
                 asyncio.run_coroutine_threadsafe(self._update_storage_stats_async(), loop)
 
             # Use asyncio.to_thread to run blocking function in background
-            success, msg, _ = await asyncio.to_thread(ingest_path, path, "parent", progress_callback_wrapper)
+            success, msg, _ = await asyncio.to_thread(ingest_path, path, "multimodal", progress_callback_wrapper)
 
             if success:
                 NotificationManager.success(msg)

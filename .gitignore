@@ -105,6 +105,8 @@ data/
 lancedb/
 *.db
 *.sqlite3
+/models/
+/models/clip_onnx/
 
 # IDEs
 .vscode/
