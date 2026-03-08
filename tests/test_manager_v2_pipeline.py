@@ -2,7 +2,7 @@ from langchain_core.messages import HumanMessage
 
 from src.agents import graph as graph_module
 from src.agents.contracts import WorkerResult
-from src.agents.nodes_v2 import manager_review_node
+from src.agents.nodes_v2 import manager_review_node, tabular_worker_node
 from src.tools.schemas import SearchResult
 from src.tools.tool_results import build_final_response_artifact
 
@@ -89,3 +89,38 @@ def test_search_local_routes_to_v2_when_pipeline_enabled(monkeypatch):
 
     output = local_module.search_local("find my notes")
     assert output[0].content == "v2 path"
+
+
+def test_tabular_worker_preserves_plot_metadata_for_ui(monkeypatch):
+    from src.agents import nodes_v2 as nodes_v2_module
+
+    monkeypatch.setattr(
+        nodes_v2_module.analyze_tabular_file_tool,
+        "func",
+        lambda file_path, user_query: (
+            "tabular content",
+            [
+                {"title": "sales_data_dummy.csv", "url": file_path, "type": "local"},
+                {
+                    "type": "plot",
+                    "mime": "image/png",
+                    "image_base64": "plotb64",
+                    "summary": "Revenue rises over time.",
+                    "title": "Plot for sales_data_dummy.csv",
+                },
+            ],
+        ),
+    )
+
+    result = tabular_worker_node(
+        {
+            "messages": [HumanMessage(content="Generate a plot and show here for Revenue vs Date")],
+            "focused_file": "/tmp/sales_data_dummy.csv",
+            "current_task": {"query": "Generate a plot and show here for Revenue vs Date"},
+            "evidence_bundle": {},
+            "task_history": [],
+        }
+    )
+
+    sources = result["evidence_bundle"]["source_metadata"]
+    assert any(item.get("type") == "plot" for item in sources)

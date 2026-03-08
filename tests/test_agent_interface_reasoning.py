@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from src.ui.agent_interface import (
+    _collect_sources_from_state_output,
     _consume_stream_chunk,
     _create_llm_buffer,
     _extract_response_phase,
@@ -65,3 +66,20 @@ def test_phase_visibility_rules():
     assert _phase_allows_ui_stream("decision") is False
     assert _phase_allows_nonstream_output("decision") is False
     assert _phase_allows_nonstream_output("unknown") is True
+
+
+def test_collect_sources_from_state_routes_plot_to_visual_artifacts():
+    context = {"sources": [], "visual_artifacts": []}
+    output_state = {
+        "sources": [
+            {"title": "Local File (csv): sales.csv", "url": "/tmp/sales.csv", "type": "local"},
+            {"type": "plot", "mime": "image/png", "image_base64": "abc123", "title": "Plot for sales.csv"},
+        ]
+    }
+
+    _collect_sources_from_state_output(output_state, context)
+
+    assert len(context["sources"]) == 1
+    assert context["sources"][0]["type"] == "local"
+    assert len(context["visual_artifacts"]) == 1
+    assert context["visual_artifacts"][0]["type"] == "plot"

@@ -197,6 +197,13 @@ def _collect_sources_from_state_output(output_state, context: dict):
     for item in candidates:
         if not isinstance(item, dict):
             continue
+        item_type = item.get("type")
+        if item_type == "plot" and item.get("image_base64"):
+            if item not in context["visual_artifacts"]:
+                context["visual_artifacts"].append(item)
+            continue
+        if item_type == "final_response":
+            continue
         if item not in context["sources"]:
             context["sources"].append(item)
 
