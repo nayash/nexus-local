@@ -319,7 +319,7 @@ If it prints `FAILED`, check:
 You can also use:
 
 ```bash
-python scripts/download_clip_onnx.py <base-url>
+python scripts/download_clip_onnx.py https://huggingface.co/openai/clip-vit-base-patch32/resolve/main
 ```
 
 This downloads expected model files into the configured local model directory. It does not choose a source automatically; you must provide the base URL.
