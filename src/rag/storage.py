@@ -6,7 +6,7 @@ import shutil
 
 # Define where the DB lives on your disk
 DB_PATH = Config.LANCEDB_PATH
-DOCSTORE_PATH = os.path.join(Config.PROJECT_ROOT, "data", "docstore")
+DOCSTORE_PATH = Config.DOCSTORE_PATH
 
 def get_db_connection():
     """Establishes connection to local LanceDB instance."""

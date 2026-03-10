@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["*"]
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[full]
+
+      - name: Packaging smoke
+        run: |
+          python -m pip wheel --no-deps . -w dist
+          python -c "import src.cli; import src.ui.main; print('import-smoke-ok')"
+
+      - name: Run tests
+        run: |
+          PYTHONPATH=. pytest -q tests --maxfail=1 -k "not watcher_lifecycle"
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Import smoke
+        shell: bash
+        run: |
+          python -c "import src.cli; import src.rag.ingestion_multimodal; print('windows-import-smoke-ok')"
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Import smoke
+        run: |
+          python -c "import src.cli; import src.rag.ingestion_multimodal; print('macos-import-smoke-ok')"
+

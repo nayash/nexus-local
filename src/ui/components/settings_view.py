@@ -1,5 +1,5 @@
 import flet as ft
-from styles import ColorPalette, TextStyles
+from src.ui.styles import ColorPalette, TextStyles
 import asyncio
 from src.ui.managers.notification_manager import NotificationManager
 
@@ -134,6 +134,7 @@ class SettingsView(ft.Container):
     def did_mount(self):
         # Determine if we can add to overlay
         if self.page:
+            self.watcher_manager.service.start()
             if self.clear_confirm_dialog not in self.page.overlay:
                 self.page.overlay.append(self.clear_confirm_dialog)
             self.refresh_watched_paths() # Load data when mounted

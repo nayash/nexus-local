@@ -1,271 +1,84 @@
-import os
-import sys
-import shutil
-import subprocess
-import time
-import threading
-import requests
-import platform
-from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable, Optional
+
+from src.core.preflight import run_preflight
 from src.rag.ingestion import init_knowledge
+
 
 @dataclass
 class StartupResult:
     success: bool
     web_search_enabled: bool
     error_message: Optional[str] = None
+    feature_readiness: Optional[dict] = None
+
 
 class StartupManager:
     """
-    Manages application startup checks and initialization.
-    Ensures dependencies, connectivity, and background services (Ollama) are ready.
+    Runs non-mutating startup checks.
+    Installation/provisioning now belongs to explicit bootstrap commands.
     """
+
     def __init__(self, is_dev: bool = False):
         self.is_dev = is_dev
-    
-    REQUIRED_MODELS = [
-        "llama3.1",
-        "nomic-embed-text"
-    ]
 
     def run_checks(self, on_update: Callable[[str, float, bool], None]) -> StartupResult:
-        """
-        Runs all startup checks sequentially.
-        
-        Args:
-            on_update: Callback for UI updates (message, progress, is_error).
-        
-        Returns:
-            StartupResult: Result of the startup process.
-        """
-        print(f'is_dev: {self.is_dev}')
         try:
             if self.is_dev:
-                print("🚀 DEV MODE: Skipping all startup checks")
-                return StartupResult(True, True, None)
+                return StartupResult(
+                    success=True,
+                    web_search_enabled=True,
+                    feature_readiness={},
+                )
 
-            # 1. Dependency Verification
-            on_update("Verifying dependencies...", 0.1, False)
-            if not self._check_dependencies():
-                error_msg = "Corrupt installation. Missing dependencies."
-                print(f"❌ STARTUP FAILED: {error_msg}")
-                return StartupResult(False, False, error_msg)
-            
-            # 2. Internet & Search Check
-            on_update("Checking connectivity...", 0.2, False)
-            web_search_enabled = self._check_internet_connection()
-            if not web_search_enabled:
-                 print("⚠️ Offline Mode: Web search disabled")
-                 on_update("Offline Mode: Web search disabled", 0.25, False)
+            on_update("Preparing local data directory...", 0.1, False)
+            report = run_preflight(
+                install_ollama=False,
+                start_ollama=False,
+                pull_models=False,
+                install_pyodide=False,
+                build_docker_image=False,
+                download_onnx=False,
+                check_multimodal_embedder=False,
+                migrate_legacy_data=True,
+            )
 
-            # 3. Ollama Binary Check
-            on_update("Checking AI Engine...", 0.3, False)
-            if not self._check_ollama_binary(on_update):
-                 error_msg = "Failed to install or find Ollama."
-                 print(f"❌ STARTUP FAILED: {error_msg}")
-                 return StartupResult(False, web_search_enabled, error_msg)
+            on_update("Running environment preflight...", 0.5, False)
+            readiness = report.to_feature_readiness()
 
-            # 4. Ollama Service Check
-            on_update("Connecting to AI Service...", 0.5, False)
-            if not self._check_ollama_service(on_update):
-                error_msg = "Failed to start AI Service."
-                print(f"❌ STARTUP FAILED: {error_msg}")
-                return StartupResult(False, web_search_enabled, error_msg)
+            if not report.core_ready:
+                error_message = report.actionable_error()
+                return StartupResult(
+                    success=False,
+                    web_search_enabled=report.web_search_enabled,
+                    error_message=error_message,
+                    feature_readiness=readiness,
+                )
 
-            # 5. AI Model Check
-            on_update("Checking AI Models...", 0.7, False)
-            if not self._check_models(on_update):
-                error_msg = "Failed to download required models."
-                print(f"❌ STARTUP FAILED: {error_msg}")
-                return StartupResult(False, web_search_enabled, error_msg)
-
-            # 6. File System Check
-            on_update("Verifying storage...", 0.9, False)
-            if not self._check_filesystem():
-                 error_msg = "Failed to initialize storage."
-                 print(f"❌ STARTUP FAILED: {error_msg}")
-                 return StartupResult(False, web_search_enabled, error_msg)
-
-            # 7. Initialize Knowledge Base
-            on_update("Initializing Knowledge Base...", 0.95, False)
+            on_update("Initializing knowledge base...", 0.9, False)
             init_knowledge()
 
+            optional_failures = [
+                f"{name}: {check.summary}"
+                for name, check in report.checks.items()
+                if check.optional and not check.ready
+            ]
+            if optional_failures:
+                print("Optional feature checks not ready:")
+                for failure in optional_failures:
+                    print(f"- {failure}")
+
             on_update("Ready!", 1.0, False)
-            print("✅ STARTUP SUCCESSFUL")
-            return StartupResult(True, web_search_enabled, None)
-
-        except Exception as e:
-            import traceback
-            error_msg = f"Unexpected error during startup: {str(e)}"
-            print(f"❌ STARTUP EXCEPTION: {error_msg}")
-            print("Full traceback:")
-            traceback.print_exc()
-            return StartupResult(False, False, error_msg)
-
-    def _check_dependencies(self) -> bool:
-        """Verify critical libraries are importable."""
-        try:
-            import flet
-            import langgraph
-            import lancedb
-            import pypdf
-            import pandas
-            import watchdog
-            import requests
-            import pydantic
-            import lark
-            import langchain_community  # includes GoogleSerperAPIWrapper
-
-            # Check for optional web search API key — warn but do not block startup
-            from src.core.config import Config
-            provider = Config.WEB_SEARCH_PROVIDER.lower()
-            if provider == "tavily" and not Config.TAVILY_API_KEY:
-                print("⚠️ TAVILY_API_KEY not set — web search will be disabled.")
-            elif provider == "serper" and not Config.SERPER_API_KEY:
-                print("⚠️ SERPER_API_KEY not set — web search will be disabled.")
-
-            return True
-        except ImportError as e:
-            print(f'dependency check failed: {e}')
-            return False
-
-    def _check_internet_connection(self) -> bool:
-        """Ping Google to verify connectivity."""
-        try:
-            response = requests.get("https://www.google.com", timeout=5)
-            return response.status_code == 200
-        except requests.RequestException:
-            return False
-
-    def _check_ollama_binary(self, on_update: Callable[[str, float, bool], None]) -> bool:
-        """Check if ollama is in PATH, install if missing."""
-        if shutil.which("ollama"):
-            return True
-
-        on_update("Downloading AI Engine...", 0.35, False)
-        system = platform.system()
-        
-        try:
-            if system == "Windows":
-                # Download setup
-                url = "https://ollama.com/download/OllamaSetup.exe"
-                setup_path = Path(os.getenv("TEMP", ".")) / "OllamaSetup.exe"
-                response = requests.get(url, stream=True)
-                with open(setup_path, 'wb') as f:
-                    shutil.copyfileobj(response.raw, f)
-                
-                on_update("Installing AI Engine (Please accept the prompt)...", 0.4, False)
-                subprocess.run([str(setup_path)], check=True)
-                
-            elif system in ["Linux", "Darwin"]:
-                 on_update("Installing AI Engine...", 0.4, False)
-                 # piped curl execution is dangerous but requested by user specs
-                 install_cmd = "curl -fsSL https://ollama.com/install.sh | sh"
-                 subprocess.run(install_cmd, shell=True, check=True)
-            else:
-                 on_update(f"Unsupported OS: {system}", 1.0, True)
-                 return False
-            
-            # Verify after install
-            return shutil.which("ollama") is not None
-            
-        except subprocess.CalledProcessError:
-            return False
-
-    def _check_ollama_service(self, on_update: Callable[[str, float, bool], None]) -> bool:
-        """Check if local API is reachable, start if not."""
-        url = "http://localhost:11434"
-        
-        # Check if running
-        try:
-            requests.get(url, timeout=1)
-            return True
-        except requests.RequestException:
-            pass # Not running
-
-        # Attempt to start
-        on_update("Starting AI Engine...", 0.55, False)
-        try:
-            # Start in background
-            subprocess.Popen(["ollama", "serve"], 
-                             stdout=subprocess.DEVNULL, 
-                             stderr=subprocess.DEVNULL)
-            
-            # Wait up to 15s
-            for _ in range(7): # 7 * 2s = 14s + 1s initial check approx
-                time.sleep(2)
-                try:
-                    requests.get(url, timeout=1)
-                    return True
-                except requests.RequestException:
-                    continue
-            
-            return False
-        except Exception:
-            return False
-
-    def _check_models(self, on_update: Callable[[str, float, bool], None]) -> bool:
-        """Ensure required models are present."""
-        try:
-            # List models
-            result = subprocess.run(["ollama", "list"], capture_output=True, text=True, check=True)
-            installed_models = result.stdout
-            
-            count = 0
-            total = len(self.REQUIRED_MODELS)
-            
-            for model in self.REQUIRED_MODELS:
-                if model not in installed_models and f"{model}:latest" not in installed_models:
-                    on_update(f"Downloading model: {model}...", 0.7 + (0.2 * count/total), False)
-                    if not self._pull_model(model, on_update):
-                        return False
-                count += 1
-            return True
-        except subprocess.CalledProcessError:
-            return False
-
-    def _pull_model(self, model_name: str, on_update: Callable[[str, float, bool], None]) -> bool:
-        """
-        Pull a model and parse output for progress.
-        Required: Read stdout line-by-line to extract percentage.
-        """
-        try:
-            process = subprocess.Popen(
-                ["ollama", "pull", model_name],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,            # Line buffered
-                universal_newlines=True
+            return StartupResult(
+                success=True,
+                web_search_enabled=report.web_search_enabled,
+                feature_readiness=readiness,
             )
-            
-            if process.stdout is None:
-                return False
+        except Exception as exc:
+            return StartupResult(
+                success=False,
+                web_search_enabled=False,
+                error_message=f"Unexpected startup error: {exc}",
+                feature_readiness={},
+            )
 
-            for line in process.stdout:
-                # Example output: "pulling manifest" or "downloading ... 10%"
-                # We want to send updates.
-                line = line.strip()
-                if not line:
-                    continue
-                    
-                # Basic progress parsing (heuristic)
-                # Ollama output format varies, but often contains "XX%"
-                if "%" in line:
-                     on_update(f"Downloading {model_name}: {line}", 0.8, False) # Keep float roughly static or calc
-                
-            process.wait()
-            return process.returncode == 0
-        except Exception:
-            return False
-
-    def _check_filesystem(self) -> bool:
-        """Ensure data directories exist."""
-        try:
-            Path("./data/lancedb").mkdir(parents=True, exist_ok=True)
-            Path("./data/sqlite").mkdir(parents=True, exist_ok=True)
-            return True
-        except Exception:
-            return False

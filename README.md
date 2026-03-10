@@ -141,8 +141,11 @@ cd Documents/projects/ml_projects/nexus-local
 echo "activating venv"
 source .flet-venv/bin/activate
 
-echo "starting Flet application"
-PYTHONPATH=. flet run --recursive src/ui/main.py
+echo "bootstrapping runtime"
+nexus-local setup
+
+echo "starting Nexus Local"
+nexus-local run
 
 ---
 
@@ -151,16 +154,36 @@ PYTHONPATH=. flet run --recursive src/ui/main.py
 ### 6.1 Base App Setup
 
 1. Create and activate the project virtual environment.
-2. Install the base dependencies:
+2. Install Nexus:
 
 ```bash
-pip install -r requirements.txt
+pip install .[full]
 ```
 
-3. Start the app:
+3. Bootstrap local runtime requirements:
 
 ```bash
-PYTHONPATH=. flet run --recursive src/ui/main.py
+nexus-local setup
+```
+
+4. Start the app:
+
+```bash
+nexus-local run
+```
+
+### 6.1.1 Diagnostics
+
+Run non-mutating diagnostics:
+
+```bash
+nexus-local doctor --check-multimodal
+```
+
+Optional data directory override:
+
+```bash
+export NEXUS_DATA_DIR=/path/to/custom/nexus-data
 ```
 
 ### 6.2 Multimodal Local RAG Setup (ONNX + LanceDB)
@@ -336,3 +359,48 @@ This will:
 - ingest supported files into the multimodal LanceDB table
 - run a few test queries
 - print the top results with modality and citation metadata
+
+---
+
+## 7. Installation Paths
+
+There are two supported ways to install Nexus Local:
+
+### Path A — Install from source (available now)
+
+Use this right away for local testing and development.
+
+```bash
+git clone <your-repo-url>
+cd nexus-local
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install .[full]
+nexus-local setup
+nexus-local doctor --check-multimodal
+nexus-local run
+```
+
+### Path B — Install from GitHub Release artifacts (after you publish a release)
+
+This is the end-user distribution path via GitHub Releases.
+
+1. Download the Linux stable artifact bundle from Releases.
+2. Install from the included wheel:
+
+```bash
+pip install nexus_local-<version>-py3-none-any.whl
+```
+
+3. Run:
+
+```bash
+nexus-local setup
+nexus-local doctor
+nexus-local run
+```
+
+Notes:
+- Path A is implemented and usable immediately.
+- Path B is enabled by CI/release workflows and becomes available after a tagged/published release.

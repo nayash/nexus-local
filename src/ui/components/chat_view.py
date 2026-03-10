@@ -3,7 +3,7 @@ import os
 import base64
 import re
 import flet as ft
-from styles import ColorPalette, TextStyles
+from src.ui.styles import ColorPalette, TextStyles
 from src.core.config import Config
 from src.core.utils import run_ollama_pull
 from src.core.user_settings import save_setting, get_setting
@@ -11,6 +11,14 @@ from src.ui.agent_interface import run_agent_stream
 from src.core.database import ChatRepository
 from src.ui.managers.notification_manager import NotificationManager
 import threading
+
+
+def _feature_ready(page: ft.Page, key: str) -> bool:
+    readiness = (page.data or {}).get("feature_readiness") or {}
+    if key not in readiness:
+        return True
+    check = readiness.get(key) or {}
+    return bool(check.get("ready", False))
 
 class ChatView(ft.Container):
     def __init__(self, on_update=None, page=None, on_view_file=None):
@@ -328,6 +336,11 @@ class ChatView(ft.Container):
             return False  # On error, assume not indexed so we ingest safely
 
     async def handle_attach_file(self, e):
+        if not _feature_ready(self.app_page, "multimodal"):
+            NotificationManager.error(
+                "Multimodal ingestion is not ready. Run `nexus-local setup --download-onnx --check-multimodal` and retry."
+            )
+            return
         try:
             files = await ft.FilePicker().pick_files(allow_multiple=False)
             if files:
@@ -682,6 +695,12 @@ class ChatView(ft.Container):
         print("Model change event triggered")
         model_name = e.control.value
         if not model_name:
+            return
+
+        if not _feature_ready(self.app_page, "ollama"):
+            NotificationManager.error(
+                "Ollama is not ready. Run `nexus-local setup --install-ollama --start-ollama --pull-models`."
+            )
             return
  
         # 1. Notify start

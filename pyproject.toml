@@ -1,9 +1,13 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "nexus-local"
 version = "0.1.0"
-description = ""
+description = "Privacy-first local AI desktop assistant"
 readme = "README.md"
-requires-python = "=3.12"
+requires-python = ">=3.12,<3.13"
 authors = [
     { name = "Outliers Tech", email = "outliers91@gmail.com" }
 ]
@@ -17,29 +21,60 @@ dependencies = [
     "pandas",
     "lancedb",
     "pypdf",
-    "ddgs==9.10.0",
+    "lark",
     "langchain-core>=0.3.15",
     "langchain>=0.3.15",
     "langchain-community>=0.3.15",
     "langchain-classic>=0.3.15",
     "langchain-ollama>=0.2.0",
     "langchain-text-splitters>=0.3.0",
-    "langgraph",
+    "langgraph"
+]
+
+[project.optional-dependencies]
+multimodal = [
     "onnxruntime-gpu",
     "transformers",
     "tokenizers",
     "Pillow",
     "PyMuPDF",
     "python-docx",
-    "beautifulsoup4"
+    "beautifulsoup4",
+]
+sandbox-docker = [
+    "docker>=7.0.0",
+]
+sandbox-pyodide = []
+full = [
+    "onnxruntime-gpu",
+    "transformers",
+    "tokenizers",
+    "Pillow",
+    "PyMuPDF",
+    "python-docx",
+    "beautifulsoup4",
+    "docker>=7.0.0",
 ]
 
 [dependency-groups]
 dev = [
-    "flet-cli=0.80.4",
-    "flet-desktop-light=0.80.4",
-    "flet-web=0.80.4",
+    "flet-cli==0.80.4",
+    "flet-desktop-light==0.80.4",
+    "flet-web==0.80.4",
+    "pytest",
 ]
+
+[project.scripts]
+nexus-local = "src.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.setuptools.package-data]
+"src.tools.sandbox" = ["*.js"]
 
 [tool.flet]
 org = "com.outliers"

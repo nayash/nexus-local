@@ -1,10 +1,10 @@
 import asyncio
 import flet as ft
-from styles import ColorPalette
-from app_layout import AppLayout
-from startup_view import StartupView
+from src.ui.styles import ColorPalette
+from src.ui.app_layout import AppLayout
+from src.ui.startup_view import StartupView
 from src.core.startup import StartupResult
-from src.core.user_settings import get_setting, save_setting
+from src.core.user_settings import get_setting
 
 async def main(page: ft.Page):
     # Page Configuration
@@ -29,6 +29,7 @@ async def main(page: ft.Page):
         print(f'Web search enabled: {result.web_search_enabled}')
         page.data["web_search_enabled"] = result.web_search_enabled
         page.data["model_name"] = get_setting("model_name", "llama3.1")
+        page.data["feature_readiness"] = result.feature_readiness or {}
         
         # Initialize Notification Infrastructure
         from src.ui.components.notification_box import NotificationOverlay
@@ -65,5 +66,9 @@ async def main(page: ft.Page):
     await asyncio.sleep(0.1) 
     page.update()  # <--- REMOVED 'await' here
 
-if __name__ == "__main__":
+
+def run_app():
     ft.app(target=main)
+
+if __name__ == "__main__":
+    run_app()

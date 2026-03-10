@@ -43,7 +43,7 @@ class DockerSandboxExecutor(BaseSandboxExecutor):
         def build_image() -> None:
             from src.core.config import Config
 
-            dockerfile_path = os.path.join(Config.PROJECT_ROOT, "Dockerfile.sandbox")
+            dockerfile_path = Config.DOCKER_SANDBOX_DOCKERFILE
             if not os.path.isfile(dockerfile_path):
                 raise FileNotFoundError(
                     f"Dockerfile.sandbox not found at {dockerfile_path}. "
@@ -51,9 +51,10 @@ class DockerSandboxExecutor(BaseSandboxExecutor):
                 )
 
             logger.info(f"🔨 Building sandbox image '{self._image}' …")
+            dockerfile_rel = os.path.relpath(dockerfile_path, Config.DOCKER_SANDBOX_CONTEXT_DIR)
             client.images.build(
-                path=Config.PROJECT_ROOT,
-                dockerfile="Dockerfile.sandbox",
+                path=Config.DOCKER_SANDBOX_CONTEXT_DIR,
+                dockerfile=dockerfile_rel,
                 tag=self._image,
                 rm=True,
             )

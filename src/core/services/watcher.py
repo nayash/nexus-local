@@ -88,7 +88,11 @@ class NexusFileEventHandler(FileSystemEventHandler):
         # Use recursive=False as per "Keep it flat" implies we organize the root's mess.
         
         # Start organization task
-        threading.Thread(target=self.organizer.organize_file, args=(file_path, self.root_path)).start()
+        threading.Thread(
+            target=self.organizer.organize_file,
+            args=(file_path, self.root_path),
+            daemon=True,
+        ).start()
 
 
 class WatcherService:
@@ -102,11 +106,17 @@ class WatcherService:
             cls._instance = super(WatcherService, cls).__new__(cls)
             cls._instance.observer = Observer()
             cls._instance.watches = {} # path -> watch
-            cls._instance.organizer = Organizer()
+            cls._instance.organizer = None
             cls._instance.ignore_list = set()
             cls._instance.repo = WatchedPathsRepository()
             cls._instance.handlers = {} # path -> handler
+            cls._instance._loaded_from_db = False
         return cls._instance
+
+    def _get_organizer(self) -> Organizer:
+        if self.organizer is None:
+            self.organizer = Organizer()
+        return self.organizer
 
     def start(self):
         """Starts the observer."""
@@ -114,7 +124,10 @@ class WatcherService:
             try:
                  self.observer.start()
                  print("WatcherService started.")
-                 self._load_from_db()
+                 should_autoload = os.getenv("NEXUS_WATCHER_AUTOLOAD", "true").strip().lower() in {"1", "true", "yes", "on"}
+                 if should_autoload and not os.getenv("PYTEST_CURRENT_TEST") and not self._loaded_from_db:
+                     self._load_from_db()
+                     self._loaded_from_db = True
             except RuntimeError:
                 pass
 
@@ -122,8 +135,11 @@ class WatcherService:
         """Stops the observer."""
         if self.observer.is_alive():
             self.observer.stop()
-            self.observer.join()
-            print("WatcherService stopped.")
+            self.observer.join(timeout=5)
+            if self.observer.is_alive():
+                print("WatcherService stop timed out; observer still alive.")
+            else:
+                print("WatcherService stopped.")
 
     def watch_path(self, path: str):
         """Adds a path to be watched."""
@@ -136,7 +152,7 @@ class WatcherService:
             return
 
         # Create a handler specifically for this path to pass the root context
-        handler = NexusFileEventHandler(path, self.organizer, self.ignore_list)
+        handler = NexusFileEventHandler(path, self._get_organizer(), self.ignore_list)
         
         # Recursive=False to only organize the "Inbox" (root) and not mess with subfolders
         watch = self.observer.schedule(handler, path, recursive=False)

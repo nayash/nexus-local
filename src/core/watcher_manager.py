@@ -13,8 +13,6 @@ class WatcherManager:
     def __init__(self):
         self.repo = WatchedPathsRepository()
         self.service = WatcherService()
-        # Ensure service is started
-        self.service.start()
 
     def initialize_path(self, path: str) -> Tuple[bool, str]:
         """
@@ -62,6 +60,7 @@ class WatcherManager:
             print(f"Initialization organization/ingestion error: {str(e)}")
 
         # 6. START: Start watching
+        self.service.start()
         self.service.watch_path(path)
         
         return True, f"Successfully started watching '{os.path.basename(path)}'"

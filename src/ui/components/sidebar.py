@@ -1,5 +1,5 @@
 import flet as ft
-from styles import ColorPalette, TextStyles
+from src.ui.styles import ColorPalette, TextStyles
 from src.core.database import ChatRepository
 
 class Sidebar(ft.Container):

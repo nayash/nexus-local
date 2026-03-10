@@ -1,5 +1,5 @@
 import flet as ft
-from styles import ColorPalette
+from src.ui.styles import ColorPalette
 import os
 
 class FileViewerView(ft.Container):
