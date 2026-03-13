@@ -16,6 +16,7 @@ import os
 import subprocess
 import shutil
 
+from src.core.config import Config
 from src.tools.sandbox.base import BaseSandboxExecutor, CodeExecutionResult
 
 logger = logging.getLogger(__name__)
@@ -81,12 +82,21 @@ class PyodideSandboxExecutor(BaseSandboxExecutor):
             )
 
         try:
+            env = os.environ.copy()
+            pyodide_node_modules = os.path.join(Config.PYODIDE_NPM_DIR, "node_modules")
+            existing_node_path = env.get("NODE_PATH", "")
+            if existing_node_path:
+                env["NODE_PATH"] = f"{pyodide_node_modules}{os.pathsep}{existing_node_path}"
+            else:
+                env["NODE_PATH"] = pyodide_node_modules
+
             proc = subprocess.run(
                 [self._node_bin, _RUNNER_SCRIPT],
                 input=code,
                 capture_output=True,
                 text=True,
                 timeout=self._timeout,
+                env=env,
             )
 
             # The runner script outputs JSON on stdout

@@ -1,6 +1,7 @@
 import os
 from typing import Callable, Literal, Optional
 
+from src.core.config import Config
 from src.rag.ingestion_multimodal import SUPPORTED_MULTIMODAL_EXTENSIONS, ingest_file_multimodal
 
 
@@ -60,8 +61,11 @@ def init_knowledge():
     """
     Seed the local knowledge base with the Nexus identity file when present.
     """
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.abspath(os.path.join(current_dir, "..", ".."))
-    data_file = os.path.join(project_root, "data", "nexus-identity.txt")
-    if os.path.exists(data_file):
-        ingest_file(data_file)
+    candidates = [
+        os.path.join(Config.DATA_DIR, "nexus-identity.txt"),
+        os.path.join(Config.PROJECT_ROOT, "data", "nexus-identity.txt"),
+    ]
+    for data_file in candidates:
+        if os.path.exists(data_file):
+            ingest_file(data_file)
+            return

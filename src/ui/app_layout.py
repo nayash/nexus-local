@@ -1,9 +1,9 @@
 import flet as ft
-from components.sidebar import Sidebar
-from components.chat_view import ChatView
-from components.settings_view import SettingsView
-from components.file_viewer_view import FileViewerView
-from styles import ColorPalette
+from src.ui.components.sidebar import Sidebar
+from src.ui.components.chat_view import ChatView
+from src.ui.components.settings_view import SettingsView
+from src.ui.components.file_viewer_view import FileViewerView
+from src.ui.styles import ColorPalette
 
 class AppLayout(ft.Row):
     def __init__(self, page: ft.Page):

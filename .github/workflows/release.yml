@@ -1,0 +1,189 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  linux_stable:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libstdc++-12-dev zenity
+          sudo apt-get install -y mesa-utils
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[full]
+          pip install pytest
+
+      - name: Build package and run smoke tests
+        run: |
+          python -m pip wheel --no-deps . -w dist
+          python -c "import src.cli; import src.ui.main; print('linux-release-import-ok')"
+          PYTHONPATH=. pytest -q tests --maxfail=1 -k "not watcher_lifecycle"
+
+      - name: Build Linux desktop bundle
+        run: |
+          mkdir -p release/linux
+          flet build linux src --yes --no-rich-output --output release/linux/linux-bundle
+          tar -C release/linux -czf release/linux/nexus-local-linux-bundle.tar.gz linux-bundle
+
+      - name: Collect diagnostics
+        run: |
+          (nexus-local doctor --check-multimodal || true) > release/linux/doctor-linux.txt
+          cp docs/release-bootstrap.md release/linux/release-bootstrap.md
+          cp dist/*.whl release/linux/
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+
+          root = Path("release/linux")
+          lines = []
+          for path in sorted(root.rglob("*")):
+              if path.is_file():
+                  digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                  rel = path.relative_to(root)
+                  lines.append(f"{digest}  {rel}")
+          (root / "SHA256SUMS.txt").write_text("\n".join(lines) + "\n")
+          PY
+
+      - name: Upload linux artifact bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-stable-artifacts
+          path: release/linux/
+
+      - name: Create / update GitHub release assets (Linux stable)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/linux/*.whl
+            release/linux/*.txt
+            release/linux/*.md
+            release/linux/*.tar.gz
+
+  windows_preview:
+    runs-on: windows-latest
+    needs: linux_stable
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Build wheel + diagnostics
+        shell: bash
+        run: |
+          mkdir -p release/windows
+          python -m pip wheel --no-deps . -w release/windows
+          flet build windows src --yes --no-rich-output --output release/windows/windows-bundle
+          powershell.exe -NoProfile -Command "Compress-Archive -Path 'release/windows/windows-bundle' -DestinationPath 'release/windows/nexus-local-windows-bundle.zip' -Force"
+          (nexus-local doctor || true) > release/windows/doctor-windows.txt
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+
+          root = Path("release/windows")
+          lines = []
+          for path in sorted(root.rglob("*")):
+              if path.is_file():
+                  digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                  rel = path.relative_to(root)
+                  lines.append(f"{digest}  {rel}")
+          (root / "SHA256SUMS.txt").write_text("\n".join(lines) + "\n")
+          PY
+
+      - name: Upload windows preview artifact bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-preview-artifacts
+          path: release/windows/
+
+      - name: Create / update GitHub release assets (Windows preview)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/windows/*.whl
+            release/windows/*.txt
+            release/windows/*.zip
+
+  macos_preview:
+    runs-on: macos-latest
+    needs: linux_stable
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Build wheel + diagnostics
+        run: |
+          mkdir -p release/macos
+          python -m pip wheel --no-deps . -w release/macos
+          flet build macos src --yes --no-rich-output --output release/macos/macos-bundle
+          ditto -c -k --sequesterRsrc --keepParent release/macos/macos-bundle release/macos/nexus-local-macos-bundle.zip
+          (nexus-local doctor || true) > release/macos/doctor-macos.txt
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+
+          root = Path("release/macos")
+          lines = []
+          for path in sorted(root.rglob("*")):
+              if path.is_file():
+                  digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                  rel = path.relative_to(root)
+                  lines.append(f"{digest}  {rel}")
+          (root / "SHA256SUMS.txt").write_text("\n".join(lines) + "\n")
+          PY
+
+      - name: Upload macOS preview artifact bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-preview-artifacts
+          path: release/macos/
+
+      - name: Create / update GitHub release assets (macOS preview)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/macos/*.whl
+            release/macos/*.txt
+            release/macos/*.zip

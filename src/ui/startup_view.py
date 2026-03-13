@@ -1,7 +1,7 @@
 import asyncio
 import flet as ft
 from typing import Callable
-from styles import ColorPalette, TextStyles
+from src.ui.styles import ColorPalette, TextStyles
 from src.core.startup import StartupManager, StartupResult
 
 class StartupView(ft.Container):

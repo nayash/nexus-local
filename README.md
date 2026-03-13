@@ -150,7 +150,6 @@ source .flet-venv/bin/activate
 
 echo "starting Flet application"
 PYTHONPATH=. flet run --recursive src/ui/main.py
-```
 
 ---
 
@@ -159,16 +158,36 @@ PYTHONPATH=. flet run --recursive src/ui/main.py
 ### 6.1 Base App Setup
 
 1. Create and activate the project virtual environment.
-2. Install the base dependencies:
+2. Install Nexus:
 
 ```bash
-pip install -r requirements.txt
+pip install .[full]
 ```
 
-3. Start the app:
+3. Bootstrap local runtime requirements:
 
 ```bash
-PYTHONPATH=. flet run --recursive src/ui/main.py
+nexus-local setup
+```
+
+4. Start the app:
+
+```bash
+nexus-local run
+```
+
+### 6.1.1 Diagnostics
+
+Run non-mutating diagnostics:
+
+```bash
+nexus-local doctor --check-multimodal
+```
+
+Optional data directory override:
+
+```bash
+export NEXUS_DATA_DIR=/path/to/custom/nexus-data
 ```
 
 ### 6.2 Multimodal Local RAG Setup (ONNX + LanceDB)
@@ -344,3 +363,57 @@ This will:
 - ingest supported files into the multimodal LanceDB table
 - run a few test queries
 - print the top results with modality and citation metadata
+
+---
+
+## 7. Installation Paths
+
+There are two supported ways to run Nexus Local from source.
+
+### Path A — One-command repo setup and run
+
+This is the primary user path after cloning the repository.
+
+```bash
+git clone <your-repo-url>
+cd nexus-local
+bash scripts/setup.sh
+```
+
+What this does:
+- creates a managed local virtualenv in `.venv` if needed
+- installs or updates the project into that virtualenv
+- runs `nexus-local setup` on the first run or after project changes
+- starts the app
+
+Second run behavior:
+- if the environment is already prepared, `bash scripts/setup.sh` skips reinstall/bootstrap work and launches the app directly
+
+Useful commands:
+
+```bash
+bash scripts/setup.sh doctor
+bash scripts/setup.sh setup
+bash scripts/setup.sh run
+bash scripts/setup.sh --force-install
+```
+
+### Path B — Manual Python install
+
+Use this if you want direct control over the Python environment.
+
+```bash
+git clone <your-repo-url>
+cd nexus-local
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install .[full]
+nexus-local setup
+nexus-local doctor --check-multimodal
+nexus-local run
+```
+
+Notes:
+- Path A is the recommended end-user source install flow.
+- Path B is the advanced/manual fallback.

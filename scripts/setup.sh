@@ -1,17 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+VENV_DIR="${NEXUS_VENV_DIR:-$ROOT_DIR/.venv}"
+INSTALL_STAMP="$VENV_DIR/.nexus-install-stamp"
+RUNTIME_STAMP="$VENV_DIR/.nexus-runtime-stamp"
+BOOTSTRAP_VERSION="2"
 CONFIG_FILE="/etc/ld.so.conf.d/nexus-local-cudnn.conf"
 TARGET_SONAME="libcudnn.so.9"
 
 print_usage() {
   cat <<'EOF'
 Usage:
-  bash scripts/setup.sh [gpu-runtime|check-gpu] [options]
+  bash scripts/setup.sh [app|setup|run|doctor|gpu-runtime|check-gpu] [options]
 
 Commands:
+  app              Create/update the local virtualenv if needed, bootstrap the
+                   runtime on first run, then launch the app. This is the
+                   default command if none is provided.
+  setup            Create/update the local virtualenv and run nexus-local setup.
+  run              Create/update the local virtualenv if needed, then launch
+                   the app without forcing setup again if it already completed.
+  doctor           Run nexus-local doctor --check-multimodal inside the managed
+                   virtualenv.
   gpu-runtime      Configure the system linker so ONNX Runtime can load cuDNN.
-                   This is the default command if none is provided.
   check-gpu        Verify NVIDIA driver, cuDNN linker visibility, ONNX Runtime
                    providers, and the project's active multimodal embedder mode.
 
@@ -19,10 +32,9 @@ Options:
   --cudnn-dir PATH Use an explicit directory that contains libcudnn.so.9.
   --print-export   Print a temporary LD_LIBRARY_PATH export command instead of
                    writing system linker config.
+  --force-install  Reinstall the Python environment and rerun nexus-local setup.
+  --skip-setup     Skip nexus-local setup before launching the app.
   -h, --help       Show this help message.
-
-This file is intended to be the common setup entrypoint for local environment
-bootstrap tasks. Add future setup steps here as new subcommands.
 EOF
 }
 
@@ -108,15 +120,113 @@ write_linker_config() {
 }
 
 resolve_python() {
-  if command_exists python; then
-    printf '%s\n' "python"
-    return 0
-  fi
-  if command_exists python3; then
-    printf '%s\n' "python3"
-    return 0
-  fi
+  local candidate
+  for candidate in python3.12 python3 python; do
+    if command_exists "$candidate" && "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)' >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
   return 1
+}
+
+compute_project_stamp() {
+  local python_bin="$1"
+  "$python_bin" - <<'PY'
+from pathlib import Path
+import hashlib
+
+root = Path.cwd()
+payload = []
+for name in ("pyproject.toml", "scripts/setup.sh"):
+    payload.append(Path(name).read_bytes())
+digest = hashlib.sha256(b"\n".join(payload)).hexdigest()
+print(digest)
+PY
+}
+
+activate_managed_venv() {
+  # shellcheck disable=SC1090
+  source "$VENV_DIR/bin/activate"
+}
+
+ensure_repo_root() {
+  cd "$ROOT_DIR"
+}
+
+ensure_python_env() {
+  local force_install="${1:-0}"
+  local python_bin
+  python_bin="$(resolve_python || true)"
+  [[ -n "$python_bin" ]] || die "Python 3.12 is required. Install python3.12 and rerun this script."
+
+  ensure_repo_root
+
+  if [[ ! -d "$VENV_DIR" ]]; then
+    log "Creating managed virtualenv at $VENV_DIR"
+    "$python_bin" -m venv "$VENV_DIR"
+  fi
+
+  activate_managed_venv
+
+  local current_stamp desired_stamp installed_stamp=""
+  desired_stamp="${BOOTSTRAP_VERSION}:$(compute_project_stamp "$python_bin")"
+  if [[ -f "$INSTALL_STAMP" ]]; then
+    installed_stamp="$(<"$INSTALL_STAMP")"
+  fi
+
+  if [[ "$force_install" == "1" || ! -x "$VENV_DIR/bin/nexus-local" || "$installed_stamp" != "$desired_stamp" ]]; then
+    log "Installing Nexus Local into the managed virtualenv"
+    python -m pip install --upgrade pip
+    pip install -e ".[full]"
+    printf '%s\n' "$desired_stamp" > "$INSTALL_STAMP"
+    rm -f "$RUNTIME_STAMP"
+  else
+    log "Python environment already matches the current project state"
+  fi
+}
+
+ensure_runtime_setup() {
+  local force_install="${1:-0}"
+  local install_stamp=""
+  local runtime_stamp=""
+
+  [[ -f "$INSTALL_STAMP" ]] && install_stamp="$(<"$INSTALL_STAMP")"
+  [[ -f "$RUNTIME_STAMP" ]] && runtime_stamp="$(<"$RUNTIME_STAMP")"
+
+  if [[ "$force_install" == "1" || "$install_stamp" != "$runtime_stamp" ]]; then
+    log "Running nexus-local setup"
+    nexus-local setup
+    printf '%s\n' "$install_stamp" > "$RUNTIME_STAMP"
+  else
+    log "Runtime bootstrap already completed; launching directly"
+  fi
+}
+
+run_app_flow() {
+  local force_install="${1:-0}"
+  local skip_setup="${2:-0}"
+
+  ensure_python_env "$force_install"
+  if [[ "$skip_setup" != "1" ]]; then
+    ensure_runtime_setup "$force_install"
+  fi
+
+  log "Starting Nexus Local"
+  exec nexus-local run
+}
+
+run_setup_flow() {
+  local force_install="${1:-0}"
+  ensure_python_env "$force_install"
+  ensure_runtime_setup "$force_install"
+}
+
+run_doctor_flow() {
+  local force_install="${1:-0}"
+  ensure_python_env "$force_install"
+  log "Running nexus-local doctor"
+  nexus-local doctor --check-multimodal
 }
 
 setup_gpu_runtime() {
@@ -237,17 +347,19 @@ else:
   return 0
 }
 
-COMMAND="gpu-runtime"
+COMMAND="app"
 PRINT_EXPORT=0
 EXPLICIT_CUDNN_DIR=""
+FORCE_INSTALL=0
+SKIP_SETUP=0
 
 if [[ $# -gt 0 ]]; then
   case "$1" in
-    gpu-runtime|check-gpu)
+    app|setup|run|doctor|gpu-runtime|check-gpu)
       COMMAND="$1"
       shift
       ;;
-    --cudnn-dir|--print-export|-h|--help)
+    --cudnn-dir|--print-export|--force-install|--skip-setup|-h|--help)
       ;;
     *)
       die "Unknown command: $1"
@@ -266,6 +378,14 @@ while [[ $# -gt 0 ]]; do
       PRINT_EXPORT=1
       shift
       ;;
+    --force-install)
+      FORCE_INSTALL=1
+      shift
+      ;;
+    --skip-setup)
+      SKIP_SETUP=1
+      shift
+      ;;
     -h|--help)
       print_usage
       exit 0
@@ -277,6 +397,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$COMMAND" in
+  app|run)
+    run_app_flow "$FORCE_INSTALL" "$SKIP_SETUP"
+    ;;
+  setup)
+    run_setup_flow "$FORCE_INSTALL"
+    ;;
+  doctor)
+    run_doctor_flow "$FORCE_INSTALL"
+    ;;
   gpu-runtime)
     setup_gpu_runtime "$EXPLICIT_CUDNN_DIR" "$PRINT_EXPORT"
     ;;

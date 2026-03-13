@@ -3,7 +3,6 @@ import hashlib
 import json
 import mimetypes
 import os
-import pwd
 import re
 import uuid
 from datetime import datetime
@@ -19,6 +18,11 @@ from src.rag.metadata_taxonomy import normalize_document_kind
 from src.rag.query_filters import compile_multimodal_filter_plan
 from src.rag.lancedb_store import delete_rows, load_rows, search as search_rows, upsert_rows
 from src.rag.schemas import build_child_row, build_parent_row, build_registry_row, parse_extra
+
+try:
+    import pwd as _pwd
+except ImportError:  # Windows
+    _pwd = None
 
 
 SUPPORTED_MULTIMODAL_EXTENSIONS = (
@@ -102,7 +106,9 @@ def _detect_source_type(path: str) -> str:
 
 def _get_file_owner(path: str) -> str:
     try:
-        return pwd.getpwuid(os.stat(path).st_uid).pw_name
+        if _pwd is None:
+            return os.getenv("USERNAME") or os.getenv("USER") or "unknown"
+        return _pwd.getpwuid(os.stat(path).st_uid).pw_name
     except Exception:
         return "unknown"
 

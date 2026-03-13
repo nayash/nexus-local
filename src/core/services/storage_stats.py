@@ -53,11 +53,7 @@ def get_total_storage_usage() -> str:
     lancedb_size = get_dir_size(Config.LANCEDB_PATH)
     
     # 3. DocStore
-    # We need to resolve the path as it's defined in ingestion/storage usually
-    # But checking Config, we don't have DOCSTORE_PATH in Config yet.
-    # It was in src/rag/storage.py: DOCSTORE_PATH = os.path.join(Config.PROJECT_ROOT, "data", "docstore")
-    docstore_path = os.path.join(Config.PROJECT_ROOT, "data", "docstore")
-    docstore_size = get_dir_size(docstore_path)
+    docstore_size = get_dir_size(Config.DOCSTORE_PATH)
     
     total_size = sqlite_size + lancedb_size + docstore_size
     
