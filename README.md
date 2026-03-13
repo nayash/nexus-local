@@ -13,6 +13,12 @@
 <img width="1916" height="1040" alt="Screenshot from 2026-03-01 00-21-45" src="https://github.com/user-attachments/assets/1737f44b-7154-471e-aacd-c338b9fab3ee" />
 ---
 
+## Quick Usage Guide
+git clone https://github.com/nayash/nexus-local.git
+cd nexus-local
+bash scripts/setup.sh
+
+
 ## 1. Executive Summary
 **Nexus-Local** is a privacy-first, hybrid AI Desktop Application that unifies **Open Web Search** and **Local Knowledge Retrieval**. Unlike cloud-based tools, Nexus runs entirely on your machine. It uses a stateful graph architecture (LangGraph) to intelligently route user intent, retrieve information from the best source (Web vs. Local), and synthesize answers using a local LLM.
 
@@ -375,7 +381,7 @@ There are two supported ways to run Nexus Local from source.
 This is the primary user path after cloning the repository.
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/nayash/nexus-local.git
 cd nexus-local
 bash scripts/setup.sh
 ```
