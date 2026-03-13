@@ -654,6 +654,14 @@ def _build_structured_query_with_decisions(
         structured_query.filter = _fallback_structured_filter(llm_normalized_query)
 
     focus_phrases = _merge_focus_phrases(quoted_focus_phrases, llm_focus_phrases)
+    if (
+        is_broad_personal_corpus_query(normalized_query)
+        and quoted_focus_phrases
+        != focus_phrases
+    ):
+        # Broad corpus requests should stay semantic-first unless the user gave
+        # an explicit quoted target that is safe to turn into metadata filters.
+        focus_phrases = quoted_focus_phrases
     focus_phrase_filter = _build_focus_phrase_filter(focus_phrases)
     if focus_phrases:
         print(f"query focus phrases: {focus_phrases}")
