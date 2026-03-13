@@ -1,10 +1,16 @@
-# Product Requirement Document (PRD): Nexus-Local
+# Nexus-Local
 
 **Version:** 0.1.0 (Native Desktop Edition)
 **Status:** DRAFT
 **Project Codename:** Nexus-Local
 **Target Platform:** Consumer Laptop (Nvidia 8GB VRAM)
 
+---
+<img width="1627" height="489" alt="Screenshot from 2026-03-01 00-27-59" src="https://github.com/user-attachments/assets/ee9d017c-0254-41f1-9ab5-031d5cc678ac" />
+
+<img width="1915" height="1042" alt="Screenshot from 2026-02-27 19-46-35" src="https://github.com/user-attachments/assets/3712edfc-d692-4333-b1c8-f025b9af946e" />
+
+<img width="1916" height="1040" alt="Screenshot from 2026-03-01 00-21-45" src="https://github.com/user-attachments/assets/1737f44b-7154-471e-aacd-c338b9fab3ee" />
 ---
 
 ## 1. Executive Summary
@@ -122,13 +128,14 @@ nexus-local/
 │   ├── core/            # any code files core to the system
 │   │   ├── config.py    # Env vars and constants
 │   │   └── llm.py       #
-|   |── rag/             # RAG related code files
-|   |── tools/           # tools for Agents to use
-|   |── notebooks/       # for any ipynb files
+│   ├── rag/             # RAG related code files
+│   ├── tools/           # tools for Agents to use
+│   ├── notebooks/       # for any ipynb files
 ```
 
 
 ### Run instruction for Flet:
+```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -141,11 +148,8 @@ cd Documents/projects/ml_projects/nexus-local
 echo "activating venv"
 source .flet-venv/bin/activate
 
-echo "bootstrapping runtime"
-nexus-local setup
-
-echo "starting Nexus Local"
-nexus-local run
+echo "starting Flet application"
+PYTHONPATH=. flet run --recursive src/ui/main.py
 
 ---
 
