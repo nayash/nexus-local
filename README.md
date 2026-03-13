@@ -364,11 +364,39 @@ This will:
 
 ## 7. Installation Paths
 
-There are two supported ways to install Nexus Local:
+There are two supported ways to run Nexus Local from source.
 
-### Path A — Install from source (available now)
+### Path A — One-command repo setup and run
 
-Use this right away for local testing and development.
+This is the primary user path after cloning the repository.
+
+```bash
+git clone <your-repo-url>
+cd nexus-local
+bash scripts/setup.sh
+```
+
+What this does:
+- creates a managed local virtualenv in `.venv` if needed
+- installs or updates the project into that virtualenv
+- runs `nexus-local setup` on the first run or after project changes
+- starts the app
+
+Second run behavior:
+- if the environment is already prepared, `bash scripts/setup.sh` skips reinstall/bootstrap work and launches the app directly
+
+Useful commands:
+
+```bash
+bash scripts/setup.sh doctor
+bash scripts/setup.sh setup
+bash scripts/setup.sh run
+bash scripts/setup.sh --force-install
+```
+
+### Path B — Manual Python install
+
+Use this if you want direct control over the Python environment.
 
 ```bash
 git clone <your-repo-url>
@@ -382,25 +410,6 @@ nexus-local doctor --check-multimodal
 nexus-local run
 ```
 
-### Path B — Install from GitHub Release artifacts (after you publish a release)
-
-This is the end-user distribution path via GitHub Releases.
-
-1. Download the Linux stable artifact bundle from Releases.
-2. Install from the included wheel:
-
-```bash
-pip install nexus_local-<version>-py3-none-any.whl
-```
-
-3. Run:
-
-```bash
-nexus-local setup
-nexus-local doctor
-nexus-local run
-```
-
 Notes:
-- Path A is implemented and usable immediately.
-- Path B is enabled by CI/release workflows and becomes available after a tagged/published release.
+- Path A is the recommended end-user source install flow.
+- Path B is the advanced/manual fallback.
