@@ -20,4 +20,4 @@ nexus-local doctor --check-multimodal
 - `setup` bootstraps Ollama, required models, Pyodide runtime, Docker sandbox image, and ONNX assets.
 - `doctor` is non-mutating and reports readiness for all major features.
 - Use `NEXUS_DATA_DIR` to override the default per-user application data directory.
-
+- On Linux, install `zenity` if file or directory pickers do not open.
