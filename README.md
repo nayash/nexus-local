@@ -14,9 +14,11 @@
 ---
 
 ## Quick Usage Guide
+```bash
 git clone https://github.com/nayash/nexus-local.git
 cd nexus-local
 bash scripts/setup.sh
+```
 
 
 ## 1. Executive Summary
