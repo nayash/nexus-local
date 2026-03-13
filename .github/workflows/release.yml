@@ -6,6 +6,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
   linux_stable:
     runs-on: ubuntu-latest
@@ -40,6 +43,7 @@ jobs:
         run: |
           mkdir -p release/linux
           flet build linux src --yes --no-rich-output --output release/linux/linux-bundle
+          tar -C release/linux -czf release/linux/nexus-local-linux-bundle.tar.gz linux-bundle
 
       - name: Collect diagnostics
         run: |
@@ -71,7 +75,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release/linux/*
+            release/linux/*.whl
+            release/linux/*.txt
+            release/linux/*.md
+            release/linux/*.tar.gz
 
   windows_preview:
     runs-on: windows-latest
@@ -97,6 +104,7 @@ jobs:
           mkdir -p release/windows
           python -m pip wheel --no-deps . -w release/windows
           flet build windows src --yes --no-rich-output --output release/windows/windows-bundle
+          powershell.exe -NoProfile -Command "Compress-Archive -Path 'release/windows/windows-bundle' -DestinationPath 'release/windows/nexus-local-windows-bundle.zip' -Force"
           (nexus-local doctor || true) > release/windows/doctor-windows.txt
           python - <<'PY'
           import hashlib
@@ -123,7 +131,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release/windows/*
+            release/windows/*.whl
+            release/windows/*.txt
+            release/windows/*.zip
 
   macos_preview:
     runs-on: macos-latest
@@ -147,6 +157,7 @@ jobs:
           mkdir -p release/macos
           python -m pip wheel --no-deps . -w release/macos
           flet build macos src --yes --no-rich-output --output release/macos/macos-bundle
+          ditto -c -k --sequesterRsrc --keepParent release/macos/macos-bundle release/macos/nexus-local-macos-bundle.zip
           (nexus-local doctor || true) > release/macos/doctor-macos.txt
           python - <<'PY'
           import hashlib
@@ -173,4 +184,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release/macos/*
+            release/macos/*.whl
+            release/macos/*.txt
+            release/macos/*.zip

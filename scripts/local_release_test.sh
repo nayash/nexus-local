@@ -80,6 +80,7 @@ PYTHONPATH=. pytest -q tests --maxfail=1 -k "not watcher_lifecycle"
 echo "[local-release] building Linux desktop bundle"
 mkdir -p release/linux
 flet build linux src --yes --no-rich-output --output release/linux/linux-bundle
+tar -C release/linux -czf release/linux/nexus-local-linux-bundle.tar.gz linux-bundle
 
 echo "[local-release] collecting diagnostics and checksums"
 (nexus-local doctor --check-multimodal || true) > release/linux/doctor-linux.txt
