@@ -1,8 +1,8 @@
 from langchain_core.messages import HumanMessage
 
 from src.agents import graph as graph_module
-from src.agents.contracts import WorkerResult
-from src.agents.nodes_v2 import manager_review_node, tabular_worker_node
+from src.agents.contracts import IntentPacket, WorkerResult
+from src.agents.nodes_v2 import _task_from_intent, manager_review_node, tabular_worker_node
 from src.tools.schemas import SearchResult
 from src.tools.tool_results import build_final_response_artifact
 
@@ -124,3 +124,58 @@ def test_tabular_worker_preserves_plot_metadata_for_ui(monkeypatch):
 
     sources = result["evidence_bundle"]["source_metadata"]
     assert any(item.get("type") == "plot" for item in sources)
+
+
+def test_local_catalog_intent_maps_to_catalog_worker():
+    task = _task_from_intent(
+        IntentPacket(primary_intent="local_catalog", normalized_query="list files in workspace"),
+        query="list the files in this workspace",
+        focused_file="",
+    )
+
+    assert task.worker == "local_catalog_worker"
+    assert task.mode == "catalog"
+
+
+def test_execute_local_retrieval_task_v2_catalog_lists_workspace_files(monkeypatch):
+    from src.tools import local as local_module
+
+    monkeypatch.setattr(
+        local_module,
+        "_query_document_catalog",
+        lambda file_filter="", workspace_id="": [
+            {
+                "file_name": "Index",
+                "source_path": "/tmp/abalone/Index",
+                "source_type": "txt",
+                "workspace_id": "workspace-1",
+            },
+            {
+                "file_name": "abalone.data",
+                "source_path": "/tmp/abalone/abalone.data",
+                "source_type": "csv",
+                "workspace_id": "workspace-1",
+            },
+            {
+                "file_name": "abalone.names",
+                "source_path": "/tmp/abalone/abalone.names",
+                "source_type": "txt",
+                "workspace_id": "workspace-1",
+            },
+        ],
+    )
+
+    payload = local_module.execute_local_retrieval_task_v2(
+        query="list the files in this workspace",
+        workspace_id="workspace-1",
+        mode="catalog",
+    )
+    result = WorkerResult.model_validate(payload)
+
+    assert result.worker == "local_catalog_worker"
+    assert result.status == "ok"
+    assert "I found 3 indexed file(s)" in result.summary
+    assert "Index" in result.summary
+    assert "abalone.data" in result.summary
+    assert "abalone.names" in result.summary
+    assert len(result.source_metadata) == 3

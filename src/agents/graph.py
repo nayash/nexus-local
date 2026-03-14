@@ -4,6 +4,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from src.agents.nodes import agent_node
 from src.agents.nodes_v2 import (
     identity_worker_node,
+    local_catalog_worker_node,
     local_retrieval_worker_node,
     manager_intent_node,
     manager_review_node,
@@ -45,6 +46,7 @@ def build_manager_v2_graph():
     workflow = StateGraph(AgentState)
     workflow.add_node("manager_intent", manager_intent_node)
     workflow.add_node("local_retrieval_worker", local_retrieval_worker_node)
+    workflow.add_node("local_catalog_worker", local_catalog_worker_node)
     workflow.add_node("web_retrieval_worker", web_retrieval_worker_node)
     workflow.add_node("identity_worker", identity_worker_node)
     workflow.add_node("tabular_worker", tabular_worker_node)
@@ -57,6 +59,7 @@ def build_manager_v2_graph():
         route_manager_next,
         {
             "local_retrieval_worker": "local_retrieval_worker",
+            "local_catalog_worker": "local_catalog_worker",
             "web_retrieval_worker": "web_retrieval_worker",
             "identity_worker": "identity_worker",
             "tabular_worker": "tabular_worker",
@@ -64,6 +67,7 @@ def build_manager_v2_graph():
         },
     )
     workflow.add_edge("local_retrieval_worker", "manager_review")
+    workflow.add_edge("local_catalog_worker", "manager_review")
     workflow.add_edge("web_retrieval_worker", "manager_review")
     workflow.add_edge("identity_worker", "manager_review")
     workflow.add_edge("tabular_worker", "manager_review")
@@ -72,6 +76,7 @@ def build_manager_v2_graph():
         route_manager_next,
         {
             "local_retrieval_worker": "local_retrieval_worker",
+            "local_catalog_worker": "local_catalog_worker",
             "web_retrieval_worker": "web_retrieval_worker",
             "identity_worker": "identity_worker",
             "tabular_worker": "tabular_worker",

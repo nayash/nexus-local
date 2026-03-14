@@ -64,7 +64,8 @@ class Config:
     
     SUPPORTED_MODELS = ["llama3.1:8b", "mistral-nemo:12b", "qwen2.5:7b", "qwen3:8b", "qwen3.5:9b", "hermes3:8b", "gemma2:9b"]
     MAX_RESULTS = 5
-    TIMEOUT = 10
+    TIMEOUT = int(os.getenv("NEXUS_TIMEOUT", "30"))
+    MANAGER_INTENT_TIMEOUT = int(os.getenv("MANAGER_INTENT_TIMEOUT", "30"))
     SEARXNG_BASE_URL = "http://localhost:8080"
     OLLAMA_BASE_URL = "http://localhost:11434"
     OLLAMA_MODEL = "llama3.1"

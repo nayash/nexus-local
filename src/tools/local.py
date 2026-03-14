@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import time
 from typing import List, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -134,11 +135,12 @@ _LOCAL_RETRIEVAL_V2_PROMPT = """You are a local retrieval planner.
 Classify the user request into exactly one mode:
 - semantic_answer: answer from document contents/snippets.
 - document_lookup: identify/list/locate files and metadata (path, title, author, type).
+- catalog: list or count available files/documents from the indexed registry.
 - full_document: return complete document text.
 - hybrid: provide both semantic answer and compact matching-file inventory.
 
 Return ONLY valid JSON:
-{"mode":"semantic_answer|document_lookup|full_document|hybrid","reason":"short reason"}
+{"mode":"semantic_answer|document_lookup|catalog|full_document|hybrid","reason":"short reason"}
 """
 
 
@@ -625,12 +627,21 @@ def _plan_local_retrieval(query: str, file_filter: str = "", workspace_id: str =
         HumanMessage(content=f"{context_line}\n{workspace_line}\nUser query: {query}"),
     ]
 
+    started_at = time.perf_counter()
+    print(
+        "local retrieval planner start | "
+        f"mode=legacy | workspace_id={workspace_id or 'global'} | "
+        f"query={query[:160]!r}"
+    )
     try:
         response = _get_retrieval_planner().invoke(messages)
         plan = _normalize_retrieval_plan(_extract_json_object(getattr(response, "content", "") or ""))
     except Exception as exc:
         print(f"⚠️ Local retrieval planner failed: {exc}")
         plan = {"retrieval_mode": "semantic_search", "response_mode": "snippets"}
+    finally:
+        elapsed_ms = round((time.perf_counter() - started_at) * 1000, 1)
+        print(f"local retrieval planner end | mode=legacy | elapsed_ms={elapsed_ms}")
 
     print(f"local retrieval plan: {plan}")
     return plan
@@ -648,16 +659,25 @@ def _plan_local_retrieval_v2(query: str, file_filter: str = "", workspace_id: st
         HumanMessage(content=f"{context_line}\n{workspace_line}\nUser query: {query}"),
     ]
     default_mode = "semantic_answer"
+    started_at = time.perf_counter()
+    print(
+        "local retrieval planner start | "
+        f"mode=v2 | workspace_id={workspace_id or 'global'} | "
+        f"query={query[:160]!r}"
+    )
     try:
         response = _get_retrieval_planner().invoke(messages)
         payload = _extract_json_object(getattr(response, "content", "") or "")
         mode = str(payload.get("mode", "")).strip().lower()
-        if mode not in {"semantic_answer", "document_lookup", "full_document", "hybrid"}:
+        if mode not in {"semantic_answer", "document_lookup", "catalog", "full_document", "hybrid"}:
             mode = default_mode
         return mode
     except Exception as exc:
         print(f"⚠️ Local retrieval planner v2 failed: {exc}")
         return default_mode
+    finally:
+        elapsed_ms = round((time.perf_counter() - started_at) * 1000, 1)
+        print(f"local retrieval planner end | mode=v2 | elapsed_ms={elapsed_ms}")
 
 
 def _compact_inventory_from_matches(matches: list[dict], limit: int = 12) -> str:
@@ -668,6 +688,30 @@ def _compact_inventory_from_matches(matches: list[dict], limit: int = 12) -> str
         title = row.get("title") or row.get("file_name") or os.path.basename(row.get("source_path") or "")
         path = row.get("source_path") or ""
         lines.append(f"- {title} :: {path}")
+    if len(matches) > limit:
+        lines.append(f"... and {len(matches) - limit} more")
+    return "\n".join(lines)
+
+
+def _build_catalog_summary(matches: list[dict], workspace_id: str = "", limit: int = 30) -> str:
+    if not matches:
+        return (
+            "No indexed files were found in the selected workspace."
+            if workspace_id
+            else "No indexed files were found."
+        )
+
+    header = (
+        f"I found {len(matches)} indexed file(s) in the selected workspace:"
+        if workspace_id
+        else f"I found {len(matches)} indexed file(s):"
+    )
+    lines = [header]
+    for row in matches[:limit]:
+        source_path = os.path.abspath(row.get("source_path") or "")
+        file_name = row.get("file_name") or os.path.basename(source_path)
+        source_type = row.get("source_type") or _source_type_from_path(source_path)
+        lines.append(f"- {file_name} ({source_type}) :: {source_path}")
     if len(matches) > limit:
         lines.append(f"... and {len(matches) - limit} more")
     return "\n".join(lines)
@@ -946,6 +990,12 @@ def get_nexus_identity_response(query: str = "") -> tuple[str, list[dict]]:
 
 def _query_documents_table(query: str, file_filter: str = "", workspace_id: str = "") -> list[dict]:
     normalized_file_filter = (file_filter or "").strip() or None
+    started_at = time.perf_counter()
+    print(
+        "documents table query start | "
+        f"workspace_id={workspace_id or 'global'} | file_filter={normalized_file_filter or 'none'} | "
+        f"query={query[:160]!r}"
+    )
     structured_query, _, _ = build_multimodal_structured_query(
         query,
         file_filter=normalized_file_filter,
@@ -971,7 +1021,7 @@ def _query_documents_table(query: str, file_filter: str = "", workspace_id: str 
                 rows.append(normalized_row)
 
     combined = _merge_document_rows(rows, lexical_rows, limit=100)
-    return sorted(
+    sorted_rows = sorted(
         combined,
         key=lambda item: (
             float(item.get("_lexical_score") or 0.0),
@@ -979,6 +1029,44 @@ def _query_documents_table(query: str, file_filter: str = "", workspace_id: str 
             (item.get("source_path") or "").lower(),
         ),
         reverse=True,
+    )
+    elapsed_ms = round((time.perf_counter() - started_at) * 1000, 1)
+    print(
+        "documents table query end | "
+        f"workspace_id={workspace_id or 'global'} | rows={len(sorted_rows)} | elapsed_ms={elapsed_ms}"
+    )
+    return sorted_rows
+
+
+def _query_document_catalog(file_filter: str = "", workspace_id: str = "") -> list[dict]:
+    normalized_file_filter = (file_filter or "").strip()
+    absolute_filter = os.path.abspath(normalized_file_filter) if normalized_file_filter else ""
+    normalized_workspace = (workspace_id or "").strip()
+    rows = []
+
+    for row in load_rows(Config.MULTIMODAL_DOCUMENTS_TABLE):
+        source_path = os.path.abspath(row.get("source_path") or "")
+        if not source_path:
+            continue
+        if absolute_filter and source_path != absolute_filter:
+            continue
+        row_workspace = (row.get("workspace_id") or "global").strip() or "global"
+        if normalized_workspace:
+            if row_workspace != normalized_workspace:
+                continue
+        elif row_workspace != "global":
+            continue
+
+        normalized_row = dict(row)
+        normalized_row["source_path"] = source_path
+        rows.append(normalized_row)
+
+    return sorted(
+        rows,
+        key=lambda item: (
+            (item.get("file_name") or "").lower(),
+            (item.get("source_path") or "").lower(),
+        ),
     )
 
 
@@ -1245,12 +1333,41 @@ def execute_local_retrieval_task_v2(
     mode: str = "semantic_answer",
 ) -> dict:
     normalized_mode = (mode or "").strip().lower()
-    if normalized_mode not in {"semantic_answer", "document_lookup", "full_document", "hybrid"}:
+    if normalized_mode not in {"semantic_answer", "document_lookup", "catalog", "full_document", "hybrid"}:
         normalized_mode = _plan_local_retrieval_v2(query, file_filter, workspace_id=workspace_id)
 
     source_metadata: list[dict] = []
     evidence: list[dict] = []
     summary_parts: list[str] = []
+
+    if normalized_mode == "catalog":
+        matches = _query_document_catalog(file_filter=file_filter, workspace_id=workspace_id)
+        source_metadata = _build_source_metadata(matches)
+        summary = _build_catalog_summary(matches, workspace_id=workspace_id, limit=30)
+        evidence = [
+            {
+                "source_type": "local",
+                "title": _source_title(row.get("source_path") or "", row.get("source_type")),
+                "url": os.path.abspath(row.get("source_path") or ""),
+                "snippet": _trim_excerpt(
+                    f"file_name={row.get('file_name') or os.path.basename(row.get('source_path') or '')}; "
+                    f"source_type={row.get('source_type') or _source_type_from_path(row.get('source_path') or '')}; "
+                    f"path={os.path.abspath(row.get('source_path') or '')}",
+                    limit=240,
+                ),
+                "score": 1.0,
+                "metadata": {"channel": "catalog"},
+            }
+            for row in matches[:30]
+        ]
+        return {
+            "worker": "local_catalog_worker",
+            "status": "ok" if matches else "empty",
+            "summary": summary[:12000],
+            "proposed_answer": summary[:4000],
+            "evidence": evidence,
+            "source_metadata": _dedupe_source_metadata(source_metadata),
+        }
 
     if normalized_mode in {"semantic_answer", "hybrid"}:
         semantic_results = _search_multimodal_results(
