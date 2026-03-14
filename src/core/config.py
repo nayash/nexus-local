@@ -2,6 +2,9 @@ import os
 import platform
 from dotenv import load_dotenv
 
+# Suppress optional Hugging Face advisory warnings when torch is intentionally absent.
+os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+
 load_dotenv()
 
 
