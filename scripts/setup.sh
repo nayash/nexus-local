@@ -9,6 +9,8 @@ RUNTIME_STAMP="$VENV_DIR/.nexus-runtime-stamp"
 BOOTSTRAP_VERSION="2"
 CONFIG_FILE="/etc/ld.so.conf.d/nexus-local-cudnn.conf"
 TARGET_SONAME="libcudnn.so.9"
+MIN_NODE_MAJOR=18
+APT_UPDATED=0
 
 print_usage() {
   cat <<'EOF'
@@ -42,6 +44,10 @@ log() {
   printf '[setup] %s\n' "$1"
 }
 
+info() {
+  printf '[setup] INFO: %s\n' "$1"
+}
+
 warn() {
   printf '[setup] WARNING: %s\n' "$1" >&2
 }
@@ -53,6 +59,313 @@ die() {
 
 command_exists() {
   command -v "$1" >/dev/null 2>&1
+}
+
+platform_name() {
+  case "$(uname -s)" in
+    Linux) printf 'linux\n' ;;
+    Darwin) printf 'macos\n' ;;
+    *) printf 'unsupported\n' ;;
+  esac
+}
+
+package_manager() {
+  if command_exists apt-get; then
+    printf 'apt\n'
+    return 0
+  fi
+  if command_exists dnf; then
+    printf 'dnf\n'
+    return 0
+  fi
+  if command_exists brew; then
+    printf 'brew\n'
+    return 0
+  fi
+  printf 'unknown\n'
+}
+
+run_as_root() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    "$@"
+    return $?
+  fi
+
+  if command_exists sudo; then
+    sudo "$@"
+    return $?
+  fi
+
+  return 127
+}
+
+ensure_apt_metadata() {
+  if [[ "$APT_UPDATED" -eq 1 ]]; then
+    return 0
+  fi
+
+  info "Refreshing apt package metadata"
+  if ! run_as_root apt-get update; then
+    warn "Failed to refresh apt package metadata"
+    return 1
+  fi
+
+  APT_UPDATED=1
+  return 0
+}
+
+install_system_packages() {
+  local manager="$1"
+  shift
+
+  case "$manager" in
+    apt)
+      ensure_apt_metadata || return 1
+      run_as_root apt-get install -y "$@"
+      ;;
+    dnf)
+      run_as_root dnf install -y "$@"
+      ;;
+    brew)
+      brew install "$@"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+install_brew_cask() {
+  brew install --cask "$1"
+}
+
+command_version() {
+  local cmd="$1"
+  shift
+
+  if ! command_exists "$cmd"; then
+    return 1
+  fi
+
+  "$cmd" "$@" 2>/dev/null | head -n 1
+}
+
+node_major_version() {
+  if ! command_exists node; then
+    return 1
+  fi
+
+  node -p 'process.versions.node.split(".")[0]' 2>/dev/null
+}
+
+resolve_python_any() {
+  local candidate
+  for candidate in python3.12 python3 python; do
+    if command_exists "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+python_version_string() {
+  local python_bin="$1"
+  "$python_bin" -c 'import sys; print(sys.version.split()[0])' 2>/dev/null
+}
+
+check_python312_installed() {
+  local python_bin
+  python_bin="$(resolve_python || true)"
+  if [[ -z "$python_bin" ]]; then
+    return 1
+  fi
+
+  python_version_string "$python_bin"
+}
+
+install_python312() {
+  local manager="$1"
+
+  case "$manager" in
+    apt)
+      install_system_packages apt python3.12 python3.12-venv
+      ;;
+    dnf)
+      install_system_packages dnf python3.12
+      ;;
+    brew)
+      install_system_packages brew python@3.12
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+ensure_python312() {
+  local auto_install="${1:-1}"
+  local manager version
+  version="$(check_python312_installed || true)"
+  if [[ -n "$version" ]]; then
+    info "Python 3.12 already installed (${version}); skipping machine install"
+    return 0
+  fi
+
+  warn "Python 3.12 is not installed"
+  if [[ "$auto_install" != "1" ]]; then
+    return 1
+  fi
+
+  manager="$(package_manager)"
+  info "Attempting to install Python 3.12 using package manager: ${manager}"
+  if ! install_python312 "$manager"; then
+    warn "Automatic Python 3.12 installation is not available for this system"
+    return 1
+  fi
+
+  version="$(check_python312_installed || true)"
+  if [[ -n "$version" ]]; then
+    info "Python 3.12 installed successfully (${version})"
+    return 0
+  fi
+
+  warn "Python 3.12 installation completed, but the interpreter is still unavailable in PATH"
+  return 1
+}
+
+ensure_node_runtime() {
+  local auto_install="${1:-1}"
+  local manager node_version npm_version node_major
+
+  node_version="$(command_version node --version || true)"
+  npm_version="$(command_version npm --version || true)"
+  node_major="$(node_major_version || true)"
+
+  if [[ -n "$node_version" && -n "$npm_version" ]]; then
+    if [[ -n "$node_major" && "$node_major" -ge "$MIN_NODE_MAJOR" ]]; then
+      info "Node.js runtime already installed (${node_version}, npm ${npm_version}); skipping machine install"
+      return 0
+    fi
+    warn "Detected Node.js ${node_version} with npm ${npm_version}, but Nexus Local expects Node.js >= ${MIN_NODE_MAJOR} for Pyodide"
+  else
+    warn "Node.js and/or npm not found; Pyodide sandbox cannot be installed yet"
+  fi
+
+  if [[ "$auto_install" != "1" ]]; then
+    return 1
+  fi
+
+  manager="$(package_manager)"
+  info "Attempting to install Node.js runtime using package manager: ${manager}"
+  if ! install_system_packages "$manager" nodejs npm; then
+    if [[ "$manager" == "brew" ]]; then
+      if ! install_system_packages brew node; then
+        warn "Automatic Node.js installation failed"
+        return 1
+      fi
+    else
+      warn "Automatic Node.js installation failed"
+      return 1
+    fi
+  fi
+
+  node_version="$(command_version node --version || true)"
+  npm_version="$(command_version npm --version || true)"
+  node_major="$(node_major_version || true)"
+  if [[ -n "$node_version" && -n "$npm_version" && -n "$node_major" && "$node_major" -ge "$MIN_NODE_MAJOR" ]]; then
+    info "Node.js runtime installed successfully (${node_version}, npm ${npm_version})"
+    return 0
+  fi
+
+  warn "Node.js installation finished, but the required runtime is still unavailable or too old"
+  return 1
+}
+
+ensure_docker_binary() {
+  local auto_install="${1:-1}"
+  local manager docker_version platform
+
+  docker_version="$(command_version docker --version || true)"
+  if [[ -n "$docker_version" ]]; then
+    info "Docker already installed (${docker_version}); skipping machine install"
+    return 0
+  fi
+
+  warn "Docker is not installed; docker sandbox features will be unavailable until it is installed"
+  if [[ "$auto_install" != "1" ]]; then
+    return 1
+  fi
+
+  manager="$(package_manager)"
+  platform="$(platform_name)"
+  info "Attempting to install Docker using package manager: ${manager}"
+
+  case "$manager:$platform" in
+    apt:linux)
+      if ! install_system_packages apt docker.io; then
+        warn "Automatic Docker installation failed"
+        return 1
+      fi
+      ;;
+    brew:macos)
+      if ! install_brew_cask docker; then
+        warn "Automatic Docker Desktop installation failed"
+        return 1
+      fi
+      ;;
+    *)
+      warn "Automatic Docker installation is not supported for this platform/package manager combination"
+      return 1
+      ;;
+  esac
+
+  docker_version="$(command_version docker --version || true)"
+  if [[ -n "$docker_version" ]]; then
+    info "Docker installed successfully (${docker_version})"
+    if [[ "$platform" == "macos" ]]; then
+      warn "Docker Desktop may still need to be opened once before the daemon becomes available"
+    fi
+    return 0
+  fi
+
+  warn "Docker installation completed, but the docker CLI is still unavailable in PATH"
+  return 1
+}
+
+log_existing_ollama() {
+  local ollama_path
+  ollama_path="$(command -v ollama 2>/dev/null || true)"
+  if [[ -n "$ollama_path" ]]; then
+    info "Ollama already installed at ${ollama_path}; setup will skip reinstall"
+  else
+    info "Ollama is not installed yet; Nexus Local setup will install it if possible"
+  fi
+}
+
+ensure_machine_prerequisites() {
+  local mode="${1:-install}"
+  local auto_install="1"
+
+  if [[ "$mode" == "check" ]]; then
+    auto_install="0"
+  fi
+
+  log "Checking machine prerequisites"
+
+  if ! ensure_python312 "$auto_install"; then
+    die "Python 3.12 is required before Nexus Local can continue."
+  fi
+
+  if ! ensure_node_runtime "$auto_install"; then
+    warn "Continuing without a ready Node.js runtime. Pyodide setup may be skipped."
+  fi
+
+  if ! ensure_docker_binary "$auto_install"; then
+    warn "Continuing without Docker. Docker sandbox features may be unavailable."
+  fi
+
+  log_existing_ollama
 }
 
 find_cudnn_dir() {
@@ -207,6 +520,7 @@ run_app_flow() {
   local force_install="${1:-0}"
   local skip_setup="${2:-0}"
 
+  ensure_machine_prerequisites install
   ensure_python_env "$force_install"
   if [[ "$skip_setup" != "1" ]]; then
     ensure_runtime_setup "$force_install"
@@ -218,12 +532,14 @@ run_app_flow() {
 
 run_setup_flow() {
   local force_install="${1:-0}"
+  ensure_machine_prerequisites install
   ensure_python_env "$force_install"
   ensure_runtime_setup "$force_install"
 }
 
 run_doctor_flow() {
   local force_install="${1:-0}"
+  ensure_machine_prerequisites check
   ensure_python_env "$force_install"
   log "Running nexus-local doctor"
   nexus-local doctor --check-multimodal
