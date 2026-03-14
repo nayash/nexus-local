@@ -219,10 +219,12 @@ def manager_intent_node(state: AgentState):
     trimmed = trim_messages(state.get("messages") or [], max_messages=12)
     query = _last_user_query(trimmed)
     focused_file = (state.get("focused_file") or "").strip()
+    workspace_id = (state.get("workspace_id") or "").strip()
 
     payload = {
         "query": query,
         "focused_file": focused_file,
+        "workspace_id": workspace_id,
         "conversation_tail": [
             {
                 "type": getattr(message, "type", ""),
@@ -249,11 +251,13 @@ def local_retrieval_worker_node(state: AgentState):
     task = WorkerTask.model_validate(state.get("current_task") or {})
     query = task.query or _last_user_query(state.get("messages") or [])
     file_filter = (state.get("focused_file") or "").strip()
+    workspace_id = (state.get("workspace_id") or "").strip()
     mode = task.mode or "semantic_answer"
 
     result_payload = execute_local_retrieval_task_v2(
         query=query,
         file_filter=file_filter,
+        workspace_id=workspace_id,
         mode=mode,
     )
     worker_result = WorkerResult.model_validate(result_payload)

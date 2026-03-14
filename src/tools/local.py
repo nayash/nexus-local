@@ -395,7 +395,12 @@ def _should_apply_lexical_supplement(query: str) -> bool:
     return bool(query_terms.intersection(text_lookup_terms))
 
 
-def _lexical_document_candidates(query: str, file_filter: str = "", limit: int = 50) -> list[dict]:
+def _lexical_document_candidates(
+    query: str,
+    file_filter: str = "",
+    limit: int = 50,
+    workspace_id: str = "",
+) -> list[dict]:
     query_terms = _query_terms(query)
     normalized_query = _normalize_for_match(query)
     if not query_terms:
@@ -410,6 +415,8 @@ def _lexical_document_candidates(query: str, file_filter: str = "", limit: int =
         if not source_path:
             continue
         if abs_filter and source_path != abs_filter:
+            continue
+        if workspace_id and row.get("workspace_id") != workspace_id:
             continue
 
         haystack = " ".join(
@@ -606,15 +613,16 @@ def _normalize_retrieval_plan(plan: dict) -> dict:
     }
 
 
-def _plan_local_retrieval(query: str, file_filter: str = "") -> dict:
+def _plan_local_retrieval(query: str, file_filter: str = "", workspace_id: str = "") -> dict:
     context_line = (
         f"Focused file: {os.path.abspath(file_filter)}"
         if file_filter
         else "Focused file: none"
     )
+    workspace_line = f"Workspace: {workspace_id}" if workspace_id else "Workspace: global"
     messages = [
         SystemMessage(content=_LOCAL_RETRIEVAL_PLAN_PROMPT),
-        HumanMessage(content=f"{context_line}\nUser query: {query}"),
+        HumanMessage(content=f"{context_line}\n{workspace_line}\nUser query: {query}"),
     ]
 
     try:
@@ -628,15 +636,16 @@ def _plan_local_retrieval(query: str, file_filter: str = "") -> dict:
     return plan
 
 
-def _plan_local_retrieval_v2(query: str, file_filter: str = "") -> str:
+def _plan_local_retrieval_v2(query: str, file_filter: str = "", workspace_id: str = "") -> str:
     context_line = (
         f"Focused file: {os.path.abspath(file_filter)}"
         if file_filter
         else "Focused file: none"
     )
+    workspace_line = f"Workspace: {workspace_id}" if workspace_id else "Workspace: global"
     messages = [
         SystemMessage(content=_LOCAL_RETRIEVAL_V2_PROMPT),
-        HumanMessage(content=f"{context_line}\nUser query: {query}"),
+        HumanMessage(content=f"{context_line}\n{workspace_line}\nUser query: {query}"),
     ]
     default_mode = "semantic_answer"
     try:
@@ -935,14 +944,20 @@ def get_nexus_identity_response(query: str = "") -> tuple[str, list[dict]]:
     return framing_header + identity_text, metadata
 
 
-def _query_documents_table(query: str, file_filter: str = "") -> list[dict]:
+def _query_documents_table(query: str, file_filter: str = "", workspace_id: str = "") -> list[dict]:
     normalized_file_filter = (file_filter or "").strip() or None
     structured_query, _, _ = build_multimodal_structured_query(
         query,
         file_filter=normalized_file_filter,
+        workspace_id=(workspace_id or "").strip() or None,
     )
     filter_node = getattr(structured_query, "filter", None)
-    lexical_rows = _lexical_document_candidates(query, normalized_file_filter or "", limit=60)
+    lexical_rows = _lexical_document_candidates(
+        query,
+        normalized_file_filter or "",
+        limit=60,
+        workspace_id=(workspace_id or "").strip(),
+    )
 
     rows = []
     if filter_node is not None:
@@ -982,8 +997,19 @@ def _build_existence_listing_response(matches: list[dict], query: str) -> str:
     return "\n".join(lines)
 
 
-def _supplement_with_lexical_parent_rows(rows: list[dict], query: str, file_filter: str = "", limit: int = 10) -> list[dict]:
-    lexical_docs = _lexical_document_candidates(query, file_filter, limit=max(limit, 12))
+def _supplement_with_lexical_parent_rows(
+    rows: list[dict],
+    query: str,
+    file_filter: str = "",
+    workspace_id: str = "",
+    limit: int = 10,
+) -> list[dict]:
+    lexical_docs = _lexical_document_candidates(
+        query,
+        file_filter,
+        limit=max(limit, 12),
+        workspace_id=workspace_id,
+    )
     if not lexical_docs:
         return rows
 
@@ -999,6 +1025,7 @@ def _supplement_with_lexical_parent_rows(rows: list[dict], query: str, file_filt
             row
             for row in parent_rows
             if os.path.abspath(row.get("source_path") or "") == source_path
+            and (not workspace_id or row.get("workspace_id") == workspace_id)
             and row.get("modality", "text") == "text"
             and (row.get("text") or "").strip()
         ]
@@ -1026,7 +1053,9 @@ def _supplement_with_lexical_parent_rows(rows: list[dict], query: str, file_filt
 
 
 def _resolve_direct_local_response_legacy(
-    query: str, file_filter: str = ""
+    query: str,
+    file_filter: str = "",
+    workspace_id: str = "",
 ) -> Optional[tuple[str, list[dict]]]:
     normalized_file_filter = (file_filter or "").strip()
     is_inventory_query = _is_explicit_document_inventory_query(query)
@@ -1035,7 +1064,7 @@ def _resolve_direct_local_response_legacy(
     if not is_inventory_query and not wants_full_content and _is_content_extraction_query(query):
         return None
 
-    matches = _query_documents_table(query, normalized_file_filter)
+    matches = _query_documents_table(query, normalized_file_filter, workspace_id=workspace_id)
     metadata = _build_source_metadata(matches)
 
     if is_inventory_query:
@@ -1045,7 +1074,14 @@ def _resolve_direct_local_response_legacy(
     if not matches:
         return (
             "",
-            metadata + [build_final_response_artifact("No indexed files matched the requested document lookup.")],
+            metadata
+            + [
+                build_final_response_artifact(
+                    "No indexed files matched the requested document lookup in the selected workspace."
+                    if workspace_id
+                    else "No indexed files matched the requested document lookup."
+                )
+            ],
         )
 
     if len(matches) > 1:
@@ -1106,6 +1142,7 @@ def _resolve_direct_local_response_legacy(
 def _resolve_direct_local_response_v2(
     query: str,
     file_filter: str = "",
+    workspace_id: str = "",
     explicit_mode: str = "document_lookup",
 ) -> tuple[str, list[dict]]:
     normalized_file_filter = (file_filter or "").strip()
@@ -1114,12 +1151,19 @@ def _resolve_direct_local_response_v2(
         mode = "document_lookup"
     wants_full_content = mode == "full_document"
 
-    matches = _query_documents_table(query, normalized_file_filter)
+    matches = _query_documents_table(query, normalized_file_filter, workspace_id=workspace_id)
     metadata = _build_source_metadata(matches)
     if not matches:
         return (
             "",
-            metadata + [build_final_response_artifact("No indexed files matched the requested document lookup.")],
+            metadata
+            + [
+                build_final_response_artifact(
+                    "No indexed files matched the requested document lookup in the selected workspace."
+                    if workspace_id
+                    else "No indexed files matched the requested document lookup."
+                )
+            ],
         )
 
     if wants_full_content and len(matches) > 1:
@@ -1177,24 +1221,32 @@ def _resolve_direct_local_response_v2(
 
 
 def resolve_direct_local_response(
-    query: str, file_filter: str = ""
+    query: str,
+    file_filter: str = "",
+    workspace_id: str = "",
 ) -> Optional[tuple[str, list[dict]]]:
     if Config.RAG_PIPELINE_VERSION == "manager_v2":
-        mode = _plan_local_retrieval_v2(query, file_filter)
+        mode = _plan_local_retrieval_v2(query, file_filter, workspace_id=workspace_id)
         if mode in {"document_lookup", "full_document", "hybrid"}:
-            return _resolve_direct_local_response_v2(query, file_filter, explicit_mode=mode)
+            return _resolve_direct_local_response_v2(
+                query,
+                file_filter,
+                workspace_id=workspace_id,
+                explicit_mode=mode,
+            )
         return None
-    return _resolve_direct_local_response_legacy(query, file_filter)
+    return _resolve_direct_local_response_legacy(query, file_filter, workspace_id=workspace_id)
 
 
 def execute_local_retrieval_task_v2(
     query: str,
     file_filter: str = "",
+    workspace_id: str = "",
     mode: str = "semantic_answer",
 ) -> dict:
     normalized_mode = (mode or "").strip().lower()
     if normalized_mode not in {"semantic_answer", "document_lookup", "full_document", "hybrid"}:
-        normalized_mode = _plan_local_retrieval_v2(query, file_filter)
+        normalized_mode = _plan_local_retrieval_v2(query, file_filter, workspace_id=workspace_id)
 
     source_metadata: list[dict] = []
     evidence: list[dict] = []
@@ -1204,6 +1256,7 @@ def execute_local_retrieval_task_v2(
         semantic_results = _search_multimodal_results(
             query,
             file_filter=(file_filter or "").strip() or None,
+            workspace_id=(workspace_id or "").strip() or None,
             top_k=8,
             apply_lexical_supplement=False,
         )
@@ -1224,7 +1277,12 @@ def execute_local_retrieval_task_v2(
 
     if normalized_mode in {"document_lookup", "full_document", "hybrid"}:
         lookup_mode = "full_document" if normalized_mode == "full_document" else "document_lookup"
-        lookup_payload = _resolve_direct_local_response_v2(query, file_filter, explicit_mode=lookup_mode)
+        lookup_payload = _resolve_direct_local_response_v2(
+            query,
+            file_filter,
+            workspace_id=workspace_id,
+            explicit_mode=lookup_mode,
+        )
         lookup_text = extract_final_response(lookup_payload[1]) if lookup_payload else ""
         lookup_sources = [
             item
@@ -1250,7 +1308,11 @@ def execute_local_retrieval_task_v2(
 
     source_metadata = _dedupe_source_metadata(source_metadata)
     status = "ok" if summary_parts else "empty"
-    summary = "\n\n".join(summary_parts) if summary_parts else "No relevant local evidence found."
+    summary = "\n\n".join(summary_parts) if summary_parts else (
+        "I couldn't find relevant information in the selected workspace."
+        if workspace_id
+        else "No relevant local evidence found."
+    )
     proposed_answer = summary if normalized_mode in {"document_lookup", "full_document"} else ""
     return {
         "worker": "local_retrieval_worker",
@@ -1262,7 +1324,7 @@ def execute_local_retrieval_task_v2(
     }
 
 
-def _search_local_legacy(query: str, file_filter: str = "") -> List[SearchResult]:
+def _search_local_legacy(query: str, file_filter: str = "", workspace_id: str = "") -> List[SearchResult]:
     """
     Searches the local LanceDB for relevant document chunks using the active strategy.
     Args:
@@ -1285,6 +1347,7 @@ def _search_local_legacy(query: str, file_filter: str = "") -> List[SearchResult
         multimodal_results = _search_multimodal_results(
             query,
             file_filter=file_filter,
+            workspace_id=(workspace_id or "").strip() or None,
             top_k=top_k,
             apply_lexical_supplement=True,
         )
@@ -1296,20 +1359,23 @@ def _search_local_legacy(query: str, file_filter: str = "") -> List[SearchResult
         msg = "No relevant local documents found."
         if file_filter:
             msg = f"The focused document '{os.path.basename(file_filter)}' does not seem to contain information regarding your query."
+        elif workspace_id:
+            msg = "I couldn't find relevant information in the selected workspace."
         return [SearchResult(title="Info", url="", content=msg)]
 
     return multimodal_results
 
 
-def _search_local_v2(query: str, file_filter: str = "") -> List[SearchResult]:
+def _search_local_v2(query: str, file_filter: str = "", workspace_id: str = "") -> List[SearchResult]:
     if not Config.MULTIMODAL_EMBEDDINGS_ENABLED:
         return [SearchResult(title="System", url="local", content="No local knowledge found. Please ingest files or folders first.")]
 
     normalized_file_filter = (file_filter or "").strip()
-    mode = _plan_local_retrieval_v2(query, normalized_file_filter)
+    mode = _plan_local_retrieval_v2(query, normalized_file_filter, workspace_id=workspace_id)
     payload = execute_local_retrieval_task_v2(
         query=query,
         file_filter=normalized_file_filter,
+        workspace_id=workspace_id,
         mode=mode,
     )
 
@@ -1333,19 +1399,20 @@ def _search_local_v2(query: str, file_filter: str = "") -> List[SearchResult]:
     return [SearchResult(title="Info", url="", content=fallback, source="local")]
 
 
-def search_local(query: str, file_filter: str = "") -> List[SearchResult]:
+def search_local(query: str, file_filter: str = "", workspace_id: str = "") -> List[SearchResult]:
     if Config.RAG_PIPELINE_VERSION == "manager_v2":
-        return _search_local_v2(query, file_filter=file_filter)
-    return _search_local_legacy(query, file_filter=file_filter)
+        return _search_local_v2(query, file_filter=file_filter, workspace_id=workspace_id)
+    return _search_local_legacy(query, file_filter=file_filter, workspace_id=workspace_id)
 
 
 def _search_multimodal_results(
     query: str,
     file_filter: str = None,
+    workspace_id: str = None,
     top_k: int = 10,
     apply_lexical_supplement: bool = True,
 ) -> List[SearchResult]:
-    rows = search_multimodal(query, top_k=top_k, file_filter=file_filter) or []
+    rows = search_multimodal(query, top_k=top_k, file_filter=file_filter, workspace_id=workspace_id) or []
     semantic_query = query
     if rows:
         semantic_query = str(rows[0].get("_semantic_query") or query)
@@ -1357,6 +1424,7 @@ def _search_multimodal_results(
             rows,
             query=semantic_query,
             file_filter=file_filter or "",
+            workspace_id=workspace_id or "",
             limit=min(max(top_k, 4), 12),
         )
     if not rows:

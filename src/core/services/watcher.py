@@ -7,15 +7,28 @@ from watchdog.events import FileSystemEventHandler
 
 from src.core.organizer import Organizer
 from src.core.database import WatchedPathsRepository
+from src.rag.ingestion import ingest_file
+
+
+_WORKSPACE_INGEST_STRATEGIES = {"workspace_ingest", "ingest_only"}
 
 class NexusFileEventHandler(FileSystemEventHandler):
     """
     Handles file system events for watched directories.
     """
-    def __init__(self, root_path: str, organizer: Organizer, ignore_list: Set[str]):
+    def __init__(
+        self,
+        root_path: str,
+        organizer: Optional[Organizer],
+        ignore_list: Set[str],
+        watch_mode: str = "organize_and_ingest",
+        workspace_id: Optional[str] = None,
+    ):
         self.root_path = root_path
         self.organizer = organizer
         self.ignore_list = ignore_list
+        self.watch_mode = (watch_mode or "organize_and_ingest").strip().lower()
+        self.workspace_id = (workspace_id or "").strip() or None
         self.last_events: Dict[str, float] = {}
         self.debounce_seconds = 2.0
 
@@ -64,30 +77,19 @@ class NexusFileEventHandler(FileSystemEventHandler):
             return
 
         # 4. Trigger Organizer in a separate thread
-        print(f"Detected change in '{file_path}'. Organizing...")
-        
-        # We need to ensure we don't trigger recursively.
-        # The organizer writes to the same folder structure, so the destination path 
-        # WILL trigger a new event.
-        # We must add destination path to ignore_list BEFORE moving?
-        # The Organizer should probably return the destination path so we can ignore it?
-        # Or better: The Organizer moves it INTO a subfolder. If we watch recursive=False, 
-        # and the organizer moves it DEEPER, then we are fine?
-        # Constraint: "The Organizer should only create folders at the Root Level... Keep it flat"
-        # Wait, if we watch root (recursive=False), and we move file to root/Subfolder, 
-        # then the move operation is a DELETE from root (if moving) or CREATE in Subfolder.
-        # If recursive=False, we only see events in root.
-        # Moving from root/file.txt to root/Category/file.txt:
-        # 1. MOVED_FROM root/file.txt (We see this)
-        # 2. MOVED_TO root/Category/file.txt (We DON'T see this if recursive=False?)
-        # Actually standard `mv` might trigger passed events differently.
-        # If we use shutil.move, it might be copy+delete.
-        
-        # If we use recursive=False, we only watch the files in the root.
-        # If a file is created in root, we process it.
-        # Use recursive=False as per "Keep it flat" implies we organize the root's mess.
-        
-        # Start organization task
+        print(f"Detected change in '{file_path}'. Processing...")
+
+        if self.watch_mode in _WORKSPACE_INGEST_STRATEGIES:
+            threading.Thread(
+                target=ingest_file,
+                kwargs={"file_path": file_path, "workspace_id": self.workspace_id or "global"},
+                daemon=True,
+            ).start()
+            return
+
+        if self.organizer is None:
+            return
+
         threading.Thread(
             target=self.organizer.organize_file,
             args=(file_path, self.root_path),
@@ -141,7 +143,14 @@ class WatcherService:
             else:
                 print("WatcherService stopped.")
 
-    def watch_path(self, path: str):
+    def watch_path(
+        self,
+        path: str,
+        *,
+        watch_mode: str = "organize_and_ingest",
+        workspace_id: Optional[str] = None,
+        recursive: bool = False,
+    ):
         """Adds a path to be watched."""
         if path in self.watches:
             print(f"Already watching: {path}")
@@ -152,10 +161,17 @@ class WatcherService:
             return
 
         # Create a handler specifically for this path to pass the root context
-        handler = NexusFileEventHandler(path, self._get_organizer(), self.ignore_list)
-        
-        # Recursive=False to only organize the "Inbox" (root) and not mess with subfolders
-        watch = self.observer.schedule(handler, path, recursive=False)
+        normalized_mode = (watch_mode or "organize_and_ingest").strip().lower()
+        organizer = None if normalized_mode in _WORKSPACE_INGEST_STRATEGIES else self._get_organizer()
+        handler = NexusFileEventHandler(
+            path,
+            organizer,
+            self.ignore_list,
+            watch_mode=normalized_mode,
+            workspace_id=workspace_id,
+        )
+
+        watch = self.observer.schedule(handler, path, recursive=bool(recursive))
         self.watches[path] = watch
         self.handlers[path] = handler
         print(f"Started watching: {path}")
@@ -173,7 +189,12 @@ class WatcherService:
         paths = self.repo.get_watched_paths()
         for p in paths:
             if p['status'] == 'active':
-                self.watch_path(p['path'])
+                self.watch_path(
+                    p['path'],
+                    watch_mode=p.get("watch_mode") or p.get("strategy") or "organize_and_ingest",
+                    workspace_id=p.get("workspace_id"),
+                    recursive=bool(p.get("recursive")),
+                )
 
     def add_to_ignore(self, path: str):
         self.ignore_list.add(path)

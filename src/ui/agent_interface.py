@@ -298,6 +298,7 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
     inputs = {
         "messages": messages,
         "focused_file": context.get("focused_file"),
+        "workspace_id": context.get("workspace_id"),
         "task_history": [],
         "sources": [],
     }
@@ -305,7 +306,7 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
     query_preview = " ".join((query or "").split())[:180]
     print(
         f"[RAG {trace_id}] start | pipeline={pipeline} | history_msgs={len(chat_history)} | "
-        f'focused_file={context.get("focused_file")} | query="{query_preview}"'
+        f'focused_file={context.get("focused_file")} | workspace_id={context.get("workspace_id")} | query="{query_preview}"'
     )
 
     shadow_task = None
@@ -313,6 +314,7 @@ async def run_agent_stream(query: str, chat_history: list, context: dict = None)
         shadow_inputs = {
             "messages": list(messages),
             "focused_file": context.get("focused_file"),
+            "workspace_id": context.get("workspace_id"),
             "task_history": [],
             "sources": [],
         }

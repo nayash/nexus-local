@@ -9,6 +9,7 @@ from src.core.utils import run_ollama_pull
 from src.core.user_settings import save_setting, get_setting
 from src.ui.agent_interface import run_agent_stream
 from src.core.database import ChatRepository
+from src.core.workspace_manager import WorkspaceManager
 from src.ui.managers.notification_manager import NotificationManager
 import threading
 
@@ -29,6 +30,7 @@ class ChatView(ft.Container):
         from src.ui.managers.notification_manager import NotificationManager
         self.notification_manager = NotificationManager
         self.current_chat_id = None
+        self.workspace_manager = WorkspaceManager()
         self.on_update = on_update
         
         self.expand = True
@@ -152,17 +154,25 @@ class ChatView(ft.Container):
             on_select=self.on_model_change
         )
         
+        self.workspace_indicator = ft.Container(visible=False, height=0)
         self.focused_file_indicator = ft.Container(visible=False, height=0)
 
         return ft.Column(
             controls=[
                 self.chat_history,
+                self.workspace_indicator,
                 # Focused File Indicator
                 self.focused_file_indicator,
                 ft.Container(
                     content=ft.Column([
                         ft.Row(
                             controls=[
+                                ft.IconButton(
+                                    ft.Icons.FOLDER_OPEN,
+                                    icon_color=ColorPalette.TEXT_SECONDARY,
+                                    tooltip="Choose Workspace Folder",
+                                    on_click=self.handle_select_workspace
+                                ),
                                 ft.IconButton(
                                     ft.Icons.ATTACH_FILE, 
                                     icon_color=ColorPalette.TEXT_SECONDARY, 
@@ -199,8 +209,12 @@ class ChatView(ft.Container):
 
     def start_new_chat(self):
         print("=== START_NEW_CHAT called ===")
-        self.clear_focus(None) # Clear any existing file focus
         self.current_chat_id = None
+        self.app_page.data["workspace_id"] = None
+        self.app_page.data["workspace_path"] = None
+        self.app_page.data["focused_file"] = None
+        self.update_workspace_ui(None)
+        self.update_focus_ui(None)
         print(f"current_chat_id set to: {self.current_chat_id}")
         self.chat_history.controls.clear()
         self.add_message("Nexus is ready. Ask me anything. I keep the answers useful and the jokes light.", is_user=False)
@@ -212,8 +226,11 @@ class ChatView(ft.Container):
         try:
             chat = self.repo.get_chat(chat_id)
             focused_file = chat.get("focused_file") if chat else None
+            workspace_id = chat.get("workspace_id") if chat else None
             self.app_page.data["focused_file"] = focused_file
+            self.app_page.data["workspace_id"] = workspace_id
             self.update_focus_ui(focused_file)
+            self._sync_workspace_ui(workspace_id)
         except Exception as e:
             NotificationManager.error(f"Failed to load chat: {e}")
 
@@ -382,6 +399,80 @@ class ChatView(ft.Container):
         self.update_focus_ui(None)
         # NotificationManager.info("Focus cleared. Searching all knowledge.")
 
+    async def handle_select_workspace(self, e):
+        try:
+            path = await ft.FilePicker().get_directory_path()
+            if not path:
+                return
+
+            NotificationManager.info(f"Preparing workspace for: {os.path.basename(path) or path}")
+
+            def _ensure_workspace():
+                return self.workspace_manager.ensure_workspace(path)
+
+            success, msg, workspace = await asyncio.to_thread(_ensure_workspace)
+            if not success or not workspace:
+                NotificationManager.error(msg)
+                return
+
+            self.app_page.data["workspace_id"] = workspace["id"]
+            self.app_page.data["workspace_path"] = workspace["root_path"]
+            if self.current_chat_id:
+                self.repo.update_chat_workspace(self.current_chat_id, workspace["id"])
+            self.update_workspace_ui(workspace["root_path"])
+            NotificationManager.success(msg)
+        except Exception as ex:
+            NotificationManager.error(f"Workspace selection failed: {ex}")
+            print(f"Workspace selection failed: {ex}")
+
+    def clear_workspace(self, e):
+        self.app_page.data["workspace_id"] = None
+        self.app_page.data["workspace_path"] = None
+        if self.current_chat_id:
+            self.repo.update_chat_workspace(self.current_chat_id, None)
+        self.update_workspace_ui(None)
+
+    def _sync_workspace_ui(self, workspace_id):
+        workspace_path = None
+        if workspace_id:
+            workspace = self.workspace_manager.get_workspace(workspace_id)
+            if workspace:
+                workspace_path = workspace.get("root_path")
+        self.app_page.data["workspace_path"] = workspace_path
+        self.update_workspace_ui(workspace_path)
+
+    def update_workspace_ui(self, workspace_path):
+        if workspace_path:
+            folder_name = os.path.basename(workspace_path.rstrip(os.sep)) or workspace_path
+            self.workspace_indicator.content = ft.Row(
+                [
+                    ft.Icon(ft.Icons.FOLDER_OPEN, size=16, color=ColorPalette.ACCENT),
+                    ft.Text(
+                        f"Workspace: {folder_name}",
+                        color=ColorPalette.ACCENT,
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                    ),
+                    ft.IconButton(
+                        ft.Icons.CLOSE,
+                        scale=0.5,
+                        icon_color=ColorPalette.TEXT_SECONDARY,
+                        on_click=self.clear_workspace,
+                        tooltip="Clear Workspace",
+                    ),
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+            )
+            self.workspace_indicator.visible = True
+            self.workspace_indicator.height = 30
+            self.workspace_indicator.bgcolor = ColorPalette.BG_SECONDARY
+            self.workspace_indicator.border = ft.border.all(1, ColorPalette.ACCENT)
+        else:
+            self.workspace_indicator.visible = False
+            self.workspace_indicator.height = 0
+
+        self.workspace_indicator.update()
+
     def update_focus_ui(self, file_path):
         if file_path:
              import os
@@ -429,7 +520,8 @@ class ChatView(ft.Container):
             print(">>> Creating new chat session...")
             self.current_chat_id = self.repo.create_chat(
                 title="New Chat",
-                focused_file=self.app_page.data.get("focused_file")
+                focused_file=self.app_page.data.get("focused_file"),
+                workspace_id=self.app_page.data.get("workspace_id"),
             )
             is_new_chat = True
             print(f">>> New chat created with ID: {self.current_chat_id}")
@@ -481,6 +573,7 @@ class ChatView(ft.Container):
             previous_reasoning = self.repo.get_last_assistant_reasoning(origin_chat_id)
             context = {
                 "focused_file": self.app_page.data.get("focused_file"),
+                "workspace_id": self.app_page.data.get("workspace_id"),
                 "last_assistant_reasoning": previous_reasoning or "",
             }
             

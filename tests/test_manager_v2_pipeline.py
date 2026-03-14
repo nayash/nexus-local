@@ -39,7 +39,7 @@ def test_manager_review_enforces_hop_limit_without_extra_dispatch():
 def test_execute_local_retrieval_task_v2_hybrid_combines_semantic_and_inventory(monkeypatch):
     from src.tools import local as local_module
 
-    def fake_semantic(query, file_filter=None, top_k=10, apply_lexical_supplement=True):
+    def fake_semantic(query, file_filter=None, workspace_id=None, top_k=10, apply_lexical_supplement=True):
         assert apply_lexical_supplement is False
         return [
             SearchResult(
@@ -54,7 +54,7 @@ def test_execute_local_retrieval_task_v2_hybrid_combines_semantic_and_inventory(
     monkeypatch.setattr(
         local_module,
         "_resolve_direct_local_response_v2",
-        lambda query, file_filter="", explicit_mode="document_lookup": (
+        lambda query, file_filter="", workspace_id="", explicit_mode="document_lookup": (
             "",
             [
                 {"title": "Local File (md): writing_ideas.md", "url": "/tmp/writing_ideas.md", "type": "local"},
@@ -81,7 +81,7 @@ def test_search_local_routes_to_v2_when_pipeline_enabled(monkeypatch):
     monkeypatch.setattr(
         local_module,
         "_search_local_v2",
-        lambda query, file_filter="": [
+        lambda query, file_filter="", workspace_id="": [
             SearchResult(title="Info", url="", content="v2 path", source="local")
         ],
     )

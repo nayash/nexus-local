@@ -44,6 +44,24 @@ class TestMultimodalSetup:
         assert embedder is None
         assert multimodal_onnx._EMBEDDER_ERROR is not None
 
+    def test_missing_asset_description_calls_out_onnx_files(self, tmp_path):
+        model_dir = tmp_path / "clip_onnx"
+        model_dir.mkdir()
+        for filename in (
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "special_tokens_map.json",
+            "vocab.json",
+            "merges.txt",
+        ):
+            (model_dir / filename).write_text("{}", encoding="utf-8")
+
+        message = multimodal_onnx._describe_missing_assets(str(model_dir))
+
+        assert "text ONNX model" in message
+        assert "vision ONNX model" in message
+        assert "nexus-local setup --download-onnx" in message
+
     def test_text_file_ingests_multimodal_rows_with_mocked_embedder(self, tmp_path, monkeypatch):
         sample = tmp_path / "sample.txt"
         sample.write_text(
