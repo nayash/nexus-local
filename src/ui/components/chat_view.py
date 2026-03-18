@@ -5,6 +5,7 @@ import re
 import flet as ft
 from src.ui.styles import ColorPalette, TextStyles
 from src.core.config import Config
+from src.core.model_routing import AUX_TASK_CHAT_TITLE, get_model_for_task, log_model_selection
 from src.core.utils import run_ollama_pull
 from src.core.user_settings import save_setting, get_setting
 from src.ui.agent_interface import run_agent_stream
@@ -300,7 +301,8 @@ class ChatView(ft.Container):
             print("Background: Imports successful. Getting LLM...")
             
             # Use a fast model if available, or just the current one
-            model_name = get_setting("model_name", "llama3.1")
+            model_name = get_model_for_task(AUX_TASK_CHAT_TITLE)
+            log_model_selection(AUX_TASK_CHAT_TITLE, model_name)
             print(f"Background: Using model {model_name} for title creation")
             llm = get_cached_llm(model_name, with_tools=False)
             print("Background: LLM acquired. Invoking...")

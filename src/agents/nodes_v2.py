@@ -19,6 +19,12 @@ from src.agents.contracts import (
 from src.agents.state import AgentState
 from src.agents.utils import trim_messages
 from src.core.config import Config
+from src.core.model_routing import (
+    AUX_TASK_MANAGER_INTENT,
+    AUX_TASK_MANAGER_REVIEW,
+    get_model_for_task,
+    log_model_selection,
+)
 from src.core.user_settings import get_setting
 from src.tools.local import execute_local_retrieval_task_v2, get_nexus_identity_response
 from src.tools.registry import analyze_tabular_file_tool
@@ -97,8 +103,8 @@ def _phase_config(phase: str) -> dict:
     }
 
 
-def _get_llm() -> ChatOllama:
-    model_name = get_setting("model_name", "llama3.1")
+def _get_llm(model_name: str | None = None) -> ChatOllama:
+    model_name = (model_name or get_setting("model_name", "llama3.1")).strip()
     if model_name not in _llm_cache:
         _llm_cache[model_name] = ChatOllama(
             model=model_name,
@@ -131,7 +137,10 @@ def _last_user_query(messages: list) -> str:
 
 
 def _invoke_contract(model_cls, system_prompt: str, user_payload: dict, phase: str):
-    llm = _get_llm()
+    task_name = AUX_TASK_MANAGER_INTENT if getattr(model_cls, "__name__", "") == "IntentPacket" else AUX_TASK_MANAGER_REVIEW
+    model_name = get_model_for_task(task_name)
+    log_model_selection(task_name, model_name)
+    llm = _get_llm(model_name)
     content = json.dumps(user_payload, ensure_ascii=True)
     messages = [
         SystemMessage(content=system_prompt),
@@ -140,7 +149,7 @@ def _invoke_contract(model_cls, system_prompt: str, user_payload: dict, phase: s
     started_at = time.perf_counter()
     print(
         "manager contract start | "
-        f"phase={phase} | model={get_setting('model_name', 'llama3.1')} | "
+        f"phase={phase} | model={model_name} | "
         f"schema={getattr(model_cls, '__name__', str(model_cls))}"
     )
     print(f"manager contract payload full | {content}")

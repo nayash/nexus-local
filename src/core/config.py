@@ -63,6 +63,12 @@ class Config:
     DATA_DIR = _default_data_dir.__func__()
     
     SUPPORTED_MODELS = ["llama3.1:8b", "mistral-nemo:12b", "qwen2.5:7b", "qwen3:8b", "qwen3.5:9b", "hermes3:8b", "gemma2:9b"]
+    AUX_MODEL_OPTIONS = [
+        "qwen3:0.6b",
+        "qwen2.5:0.5b",
+        "qwen2.5:1.5b",
+        "llama3.2:1b",
+    ]
     MAX_RESULTS = 5
     TIMEOUT = int(os.getenv("NEXUS_TIMEOUT", "30"))
     MANAGER_INTENT_TIMEOUT = int(os.getenv("MANAGER_INTENT_TIMEOUT", "30"))

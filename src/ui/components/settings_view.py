@@ -3,6 +3,10 @@ from src.ui.styles import ColorPalette, TextStyles
 import asyncio
 from src.ui.managers.notification_manager import NotificationManager
 
+from src.core.config import Config
+from src.core.model_routing import describe_enabled_aux_tasks
+from src.core.user_settings import get_setting, save_setting
+from src.core.utils import run_ollama_pull
 from src.core.watcher_manager import WatcherManager
 from src.core.services.storage_stats import get_total_storage_usage
 
@@ -18,6 +22,18 @@ class SettingsView(ft.Container):
         self.content = self.build_content()
 
     def build_content(self):
+        aux_model_value = get_setting("aux_model_name", "")
+        self.aux_model_dropdown = ft.Dropdown(
+            options=[ft.dropdown.Option(key="", text="Disabled")] + [ft.dropdown.Option(model) for model in dict.fromkeys(Config.AUX_MODEL_OPTIONS)],
+            value=aux_model_value,
+            width=220,
+            text_style=ft.TextStyle(color=ColorPalette.TEXT_PRIMARY, size=12),
+            bgcolor=ColorPalette.BG_SECONDARY,
+            border_color=ColorPalette.BORDER,
+            border_radius=10,
+            hint_text="Disabled",
+            on_select=self.on_aux_model_change,
+        )
         
         # Confirmation Dialog for clearing DB
         self.clear_confirm_dialog = ft.AlertDialog(
@@ -52,6 +68,37 @@ class SettingsView(ft.Container):
                     spacing=20
                 ),
                 ft.Divider(color=ColorPalette.BORDER, height=40),
+
+                ft.Text("Models", style=TextStyles.body_normal(), weight=ft.FontWeight.BOLD),
+                ft.Text("Choose an optional lightweight helper model for non-user-facing routing tasks.", style=TextStyles.label_small()),
+                ft.Container(height=10),
+
+                self.create_setting_card(
+                    ft.Row(
+                        controls=[
+                            ft.Text("Auxiliary Model", color=ColorPalette.TEXT_PRIMARY, size=16),
+                            ft.IconButton(
+                                icon=ft.Icons.INFO_OUTLINE,
+                                icon_color=ColorPalette.TEXT_SECONDARY,
+                                icon_size=16,
+                                tooltip=(
+                                    "Optional lightweight model used only for internal tasks like "
+                                    f"{describe_enabled_aux_tasks()}. Final answers and critical retrieval "
+                                    "filter extraction still use the main chat model. Select Disabled to keep a single-model setup."
+                                ),
+                            ),
+                        ],
+                        spacing=6,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    (
+                        "Improves responsiveness for helper tasks while keeping answer quality on the main model. "
+                        "If the dropdown is set to Disabled, Nexus uses the main model for everything."
+                    ),
+                    self.aux_model_dropdown
+                ),
+
+                ft.Container(height=20),
                 
                 # --- Watched Folders Section ---
                 ft.Text("Watched Folders", style=TextStyles.body_normal(), weight=ft.FontWeight.BOLD),
@@ -155,6 +202,43 @@ class SettingsView(ft.Container):
 
         # Run async task
         asyncio.create_task(_update_ui())
+
+    async def on_aux_model_change(self, e):
+        model_name = (e.control.value or "").strip()
+        previous_value = str(get_setting("aux_model_name", "") or "")
+
+        if not model_name:
+            save_setting("aux_model_name", "")
+            NotificationManager.success("Auxiliary model disabled. Nexus will use the main model for all tasks.")
+            return
+
+        if not self.page or not ((self.page.data or {}).get("feature_readiness") or {}).get("ollama", {}).get("ready", False):
+            e.control.value = previous_value
+            e.control.update()
+            NotificationManager.error(
+                "Ollama is not ready. Run `nexus-local setup --install-ollama --start-ollama --pull-models`."
+            )
+            return
+
+        NotificationManager.info(f"Checking/Downloading status of {model_name}...")
+
+        async def progress_callback(msg: str):
+            if "pulling" in msg and "%" in msg:
+                return
+
+        try:
+            result_msg = await run_ollama_pull(model_name, progress_callback)
+            if "ready" in result_msg:
+                save_setting("aux_model_name", model_name)
+                NotificationManager.success(f"Auxiliary model {model_name} ready.")
+            else:
+                e.control.value = previous_value
+                e.control.update()
+                NotificationManager.info(result_msg)
+        except Exception as ex:
+            e.control.value = previous_value
+            e.control.update()
+            NotificationManager.error(f"Error selecting auxiliary model: {str(ex)}")
 
 
     def refresh_watched_paths(self):
@@ -317,13 +401,15 @@ class SettingsView(ft.Container):
             NotificationManager.error("Critical Error: Storage module not found.")
 
     def create_setting_card(self, title, subtitle, control):
+        title_control = ft.Text(title, color=ColorPalette.TEXT_PRIMARY, size=16) if isinstance(title, str) else title
+        subtitle_control = ft.Text(subtitle, color=ColorPalette.TEXT_SECONDARY, size=12) if isinstance(subtitle, str) else subtitle
         return ft.Container(
             content=ft.Row(
                 [
                     ft.Column(
                         [
-                            ft.Text(title, color=ColorPalette.TEXT_PRIMARY, size=16),
-                            ft.Text(subtitle, color=ColorPalette.TEXT_SECONDARY, size=12),
+                            title_control,
+                            subtitle_control,
                         ],
                         expand=True
                     ),

@@ -9,6 +9,11 @@ from langchain_core.structured_query import Comparator, Comparison, Operation, O
 from langchain_ollama import ChatOllama
 
 from src.core.config import Config
+from src.core.model_routing import (
+    AUX_TASK_LOCAL_RETRIEVAL_PLANNER,
+    get_model_for_task,
+    log_model_selection,
+)
 from src.core.user_settings import get_setting
 from src.rag.ingestion_multimodal import search_multimodal
 from src.rag.lancedb_store import load_rows
@@ -570,7 +575,8 @@ def _build_text_result_content(row: dict) -> str:
 
 
 def _get_retrieval_planner():
-    model_name = get_setting("model_name", "llama3.1")
+    model_name = get_model_for_task(AUX_TASK_LOCAL_RETRIEVAL_PLANNER)
+    log_model_selection(AUX_TASK_LOCAL_RETRIEVAL_PLANNER, model_name)
     planner = _PLANNER_CACHE.get(model_name)
     if planner is None:
         planner = ChatOllama(
