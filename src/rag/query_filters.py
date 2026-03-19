@@ -2,7 +2,6 @@ import os
 import re
 import json
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from datetime import date, timedelta
 from functools import lru_cache
@@ -18,6 +17,7 @@ from langchain_core.structured_query import (
 from langchain_ollama import ChatOllama
 
 from src.core.config import Config
+from src.core.llm_timeout import invoke_llm_with_hard_timeout
 from src.core.user_settings import get_setting
 from src.rag.metadata_taxonomy import (
     CANONICAL_DOCUMENT_KINDS,
@@ -156,15 +156,14 @@ def _get_query_normalizer_llm():
 
 def _invoke_llm_with_timeout(llm, messages, *, label: str):
     timeout_seconds = max(int(getattr(Config, "TIMEOUT", 10) or 10), 1)
-    executor = ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(llm.invoke, messages)
-    try:
-        return future.result(timeout=timeout_seconds)
-    except FutureTimeoutError as exc:
-        future.cancel()
-        raise TimeoutError(f"{label} timed out after {timeout_seconds}s") from exc
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+    return invoke_llm_with_hard_timeout(
+        model_name=llm.model,
+        messages=messages,
+        label=label,
+        timeout_seconds=timeout_seconds,
+        temperature=getattr(llm, "temperature", 0),
+        base_url=getattr(llm, "base_url", Config.OLLAMA_BASE_URL),
+    )
 
 
 def _coerce_comparator(value: str):

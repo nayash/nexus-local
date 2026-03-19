@@ -1,7 +1,6 @@
 import json
 import time
 from typing import Dict, List
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
@@ -19,6 +18,7 @@ from src.agents.contracts import (
 from src.agents.state import AgentState
 from src.agents.utils import trim_messages
 from src.core.config import Config
+from src.core.llm_timeout import invoke_llm_with_hard_timeout
 from src.core.model_routing import (
     AUX_TASK_MANAGER_INTENT,
     AUX_TASK_MANAGER_REVIEW,
@@ -117,16 +117,15 @@ def _get_llm(model_name: str | None = None) -> ChatOllama:
 def _invoke_llm_with_timeout(llm: ChatOllama, messages, *, label: str, config: dict, timeout_seconds: int | None = None):
     if timeout_seconds is None:
         timeout_seconds = int(getattr(Config, "TIMEOUT", 10) or 10)
-    timeout_seconds = max(int(timeout_seconds), 1)
-    executor = ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(llm.invoke, messages, stream=False, config=config)
-    try:
-        return future.result(timeout=timeout_seconds)
-    except FutureTimeoutError as exc:
-        future.cancel()
-        raise TimeoutError(f"{label} timed out after {timeout_seconds}s") from exc
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+    return invoke_llm_with_hard_timeout(
+        model_name=llm.model,
+        messages=messages,
+        label=label,
+        config=config,
+        timeout_seconds=timeout_seconds,
+        temperature=getattr(llm, "temperature", 0),
+        base_url=getattr(llm, "base_url", Config.OLLAMA_BASE_URL),
+    )
 
 
 def _last_user_query(messages: list) -> str:

@@ -70,7 +70,7 @@ class Config:
         "llama3.2:1b",
     ]
     MAX_RESULTS = 5
-    TIMEOUT = int(os.getenv("NEXUS_TIMEOUT", "30"))
+    TIMEOUT = int(os.getenv("NEXUS_TIMEOUT", "120"))
     MANAGER_INTENT_TIMEOUT = int(os.getenv("MANAGER_INTENT_TIMEOUT", "30"))
     SEARXNG_BASE_URL = "http://localhost:8080"
     OLLAMA_BASE_URL = "http://localhost:11434"
