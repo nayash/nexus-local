@@ -512,12 +512,12 @@ def _rescue_textual_tool_call(response) -> bool:
     return True
 
 
-def _enrich_local_search_tool_calls(response, last_user_content: str):
+def _enrich_local_search_tool_calls(response, last_user_content: str, workspace_id: str = ""):
     if not response.tool_calls:
         return
 
     for tool_call in response.tool_calls:
-        if tool_call["name"] != "local_search_tool":
+        if tool_call["name"] not in {"local_search_tool", "lookup_local_files_tool"}:
             continue
 
         args = tool_call.get("args", {})
@@ -529,6 +529,8 @@ def _enrich_local_search_tool_calls(response, last_user_content: str):
         if (is_filename_only or is_truncated) and 0 < len(last_user_content) < 1000:
             print(f"   ✨ ENRICHING QUERY: '{query}' -> '{last_user_content}'")
             tool_call["args"]["query"] = last_user_content
+        if workspace_id and not tool_call["args"].get("workspace_id"):
+            tool_call["args"]["workspace_id"] = workspace_id
 
 
 def _rewrite_tabular_focus_tool_calls(response, focused_file: str, last_user_content: str):
@@ -548,7 +550,13 @@ def _rewrite_tabular_focus_tool_calls(response, focused_file: str, last_user_con
         }
 
 
-def _inject_forced_tool_call(response, messages, last_user_content: str, focused_file: str | None) -> bool:
+def _inject_forced_tool_call(
+    response,
+    messages,
+    last_user_content: str,
+    focused_file: str | None,
+    workspace_id: str = "",
+) -> bool:
     if getattr(response, "tool_calls", None) or not last_user_content:
         return False
     if _get_latest_message_type(messages) != "human":
@@ -563,10 +571,10 @@ def _inject_forced_tool_call(response, messages, last_user_content: str, focused
             args = {"file_path": focused_file, "user_query": last_user_content}
         else:
             tool_name = "local_search_tool"
-            args = {"query": last_user_content, "file_filter": focused_file}
+            args = {"query": last_user_content, "file_filter": focused_file, "workspace_id": workspace_id}
     elif _should_force_local_search_fallback(messages, last_user_content):
         tool_name = "local_search_tool"
-        args = {"query": last_user_content, "file_filter": ""}
+        args = {"query": last_user_content, "file_filter": "", "workspace_id": workspace_id}
 
     if not tool_name:
         return False
@@ -804,6 +812,7 @@ def agent_node(state: AgentState):
     # NOW: Read from state, not session
     print(f'agent_node: focused_file: {state.get("focused_file")}')
     focused_file = state.get("focused_file")
+    workspace_id = (state.get("workspace_id") or "").strip()
     
     if focused_file:
         print(f"   🎯 FOCUS MODE ACTIVE: {focused_file}")
@@ -828,6 +837,15 @@ def agent_node(state: AgentState):
             # Create a new system message with the added instruction
             new_content = messages[0].content + focus_instruction
             messages[0] = SystemMessage(content=new_content)
+    elif workspace_id and isinstance(messages[0], SystemMessage):
+        workspace_instruction = (
+            f"\n\n### WORKSPACE MODE ACTIVE\n"
+            f"The current chat is scoped to workspace '{workspace_id}'.\n"
+            "For local retrieval, pass this exact workspace_id to `local_search_tool` or "
+            "`lookup_local_files_tool`.\n"
+            "If local search returns no relevant result, clearly say the information was not found in the selected workspace.\n"
+        )
+        messages[0] = SystemMessage(content=messages[0].content + workspace_instruction)
 
     if _is_short_factual_question(last_user_content) and isinstance(messages[0], SystemMessage):
         concise_instruction = (
@@ -871,9 +889,9 @@ def agent_node(state: AgentState):
     _rescue_textual_tool_call(response)
 
     # Normalize tool arguments after any native or rescued tool call.
-    _enrich_local_search_tool_calls(response, last_user_content)
+    _enrich_local_search_tool_calls(response, last_user_content, workspace_id=workspace_id)
     _rewrite_tabular_focus_tool_calls(response, focused_file, last_user_content)
-    _inject_forced_tool_call(response, messages, last_user_content, focused_file)
+    _inject_forced_tool_call(response, messages, last_user_content, focused_file, workspace_id=workspace_id)
     if response.tool_calls:
         print(f"agent_node: tool plan -> {_summarize_tool_calls(response.tool_calls)}")
     else:

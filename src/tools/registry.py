@@ -69,6 +69,10 @@ class LocalSearchInput(BaseModel):
         default="",
         description="The absolute path of a specific file to search within. MUST be a valid, existing path provided in the context (e.g. from `focused_file` state). DO NOT guess or hallucinate paths based on filenames in the query. If the user mentions a filename but has not attached it, include the filename in the `query` field and leave this `file_filter` as an empty string."
     )
+    workspace_id: str = Field(
+        default="",
+        description="Optional logical workspace scope for local retrieval. Leave empty unless provided by app context."
+    )
 
 
 class LocalFileLookupInput(BaseModel):
@@ -85,6 +89,10 @@ class LocalFileLookupInput(BaseModel):
             "Optional absolute path to restrict lookup to a specific focused file. "
             "Leave empty unless the user explicitly attached or focused a file."
         )
+    )
+    workspace_id: str = Field(
+        default="",
+        description="Optional logical workspace scope for local file lookup. Leave empty unless provided by app context."
     )
 
 
@@ -124,7 +132,7 @@ def web_search_tool(query: str, category: str = "general", time_range: str = "")
     return filtered_content, source_metadata
 
 @tool(args_schema=LocalSearchInput, response_format="content_and_artifact")
-def local_search_tool(query: str, file_filter: str = ""):
+def local_search_tool(query: str, file_filter: str = "", workspace_id: str = ""):
     """
     Search inside the user's local private document contents.
     Use this for summaries, explanations, key points, ideas, or answers grounded in document text.
@@ -132,7 +140,7 @@ def local_search_tool(query: str, file_filter: str = ""):
     normalized_file_filter = (file_filter or "").strip() or None
     print(f'calling search_local with query: {query} and file_filter: {normalized_file_filter}')
 
-    results = search_local(query, normalized_file_filter)
+    results = search_local(query, normalized_file_filter, workspace_id=(workspace_id or "").strip())
     
     # Keep context compact to reduce cross-document contamination.
     context_budget = 12000 if normalized_file_filter else 7000
@@ -179,13 +187,17 @@ def local_search_tool(query: str, file_filter: str = ""):
 
 
 @tool(args_schema=LocalFileLookupInput, response_format="content_and_artifact")
-def lookup_local_files_tool(query: str, file_filter: str = ""):
+def lookup_local_files_tool(query: str, file_filter: str = "", workspace_id: str = ""):
     """
     Look up local files/documents by metadata.
     Use this to list, locate, or identify files, and to answer filename/title/author/type/path/full-text requests.
     """
     normalized_file_filter = (file_filter or "").strip() or None
-    result = resolve_direct_local_response(query, normalized_file_filter or "")
+    result = resolve_direct_local_response(
+        query,
+        normalized_file_filter or "",
+        workspace_id=(workspace_id or "").strip(),
+    )
     if result is not None:
         return result
     return (

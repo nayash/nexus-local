@@ -16,6 +16,7 @@ class AgentState(TypedDict):
     context: str
     sources: Annotated[List[Dict[str, Any]], add]
     focused_file: Optional[str]
+    workspace_id: Optional[str]
     intent_packet: Dict[str, Any]
     current_task: Dict[str, Any]
     task_history: Annotated[List[Dict[str, Any]], add]

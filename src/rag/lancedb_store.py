@@ -177,3 +177,25 @@ def delete_rows(table_name: str, delete_filter: Optional[str] = None):
         table.delete(delete_filter)
     except Exception as exc:
         print(f"⚠️ Failed to delete rows in '{table_name}': {exc}")
+
+
+def rewrite_rows(table_name: str, transform_fn):
+    rows = load_rows(table_name)
+    if not rows:
+        return None
+
+    transformed_rows = []
+    changed = False
+    for row in rows:
+        updated_row = transform_fn(dict(row))
+        if updated_row is None:
+            continue
+        if updated_row != row:
+            changed = True
+        transformed_rows.append(updated_row)
+
+    if not changed:
+        return None
+
+    db = get_db()
+    return _rebuild_table_with_rows(db, table_name, transformed_rows)

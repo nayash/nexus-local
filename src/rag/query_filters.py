@@ -1,12 +1,12 @@
 import os
 import re
 import json
+import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 from functools import lru_cache
 from typing import Optional, Tuple
 
-from langchain_classic.chains.query_constructor.base import AttributeInfo, load_query_constructor_runnable
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.structured_query import (
     Comparator,
@@ -17,6 +17,7 @@ from langchain_core.structured_query import (
 from langchain_ollama import ChatOllama
 
 from src.core.config import Config
+from src.core.llm_timeout import invoke_llm_with_hard_timeout
 from src.core.user_settings import get_setting
 from src.rag.metadata_taxonomy import (
     CANONICAL_DOCUMENT_KINDS,
@@ -70,6 +71,25 @@ Rules:
 - If there is an explicit target phrase/title, include it in focus_phrases.
 - Do not invent metadata filters or extra fields.
 """
+_FILTER_EXTRACTION_PROMPT = """You convert a local file search request into a compact retrieval plan.
+
+Return ONLY valid JSON with this exact schema:
+{
+  "query": "string",
+  "filters": [
+    {"attribute":"file_name|source_path|source_type|document_kind|author|title|owner|source_mtime_date|workspace_id|page",
+     "comparator":"eq|ne|gt|gte|lt|lte|in|like",
+     "value":"string or integer or [values]"}
+  ]
+}
+
+Rules:
+- Preserve the main semantic request in "query".
+- Use filters only when the user explicitly or strongly implies metadata constraints.
+- Prefer file_name/title/source_path filters for explicitly named files or quoted titles.
+- For broad requests, filters may be empty.
+- Do not explain anything. Output JSON only.
+"""
 
 
 @dataclass
@@ -92,6 +112,12 @@ class CompiledFilterPlan:
     strict_clauses: list[FilterClauseDecision]
     dropped_clauses: list[FilterClauseDecision]
     allow_unfiltered_fallback: bool = True
+
+
+class _SimpleStructuredQuery:
+    def __init__(self, query: str, filter_node=None):
+        self.query = query
+        self.filter = filter_node
 
 
 def _today() -> date:
@@ -128,80 +154,77 @@ def _get_query_normalizer_llm():
     )
 
 
+def _invoke_llm_with_timeout(llm, messages, *, label: str):
+    timeout_seconds = max(int(getattr(Config, "TIMEOUT", 10) or 10), 1)
+    return invoke_llm_with_hard_timeout(
+        model_name=llm.model,
+        messages=messages,
+        label=label,
+        timeout_seconds=timeout_seconds,
+        temperature=getattr(llm, "temperature", 0),
+        base_url=getattr(llm, "base_url", Config.OLLAMA_BASE_URL),
+    )
+
+
+def _coerce_comparator(value: str):
+    mapping = {
+        "eq": Comparator.EQ,
+        "ne": Comparator.NE,
+        "gt": Comparator.GT,
+        "gte": Comparator.GTE,
+        "lt": Comparator.LT,
+        "lte": Comparator.LTE,
+        "in": Comparator.IN,
+        "like": Comparator.LIKE,
+    }
+    return mapping.get(str(value or "").strip().lower())
+
+
+def _comparison_from_payload(item: dict) -> Optional[Comparison]:
+    if not isinstance(item, dict):
+        return None
+    comparator = _coerce_comparator(item.get("comparator"))
+    attribute = str(item.get("attribute", "") or "").strip()
+    if comparator is None or not attribute:
+        return None
+    value = item.get("value")
+    if comparator == Comparator.IN and not isinstance(value, list):
+        value = [value] if value is not None else []
+    return Comparison(comparator=comparator, attribute=attribute, value=value)
+
+
+def _structured_query_from_payload(payload: dict, fallback_query: str):
+    query = " ".join(str(payload.get("query", "") or "").split()).strip() or fallback_query
+    raw_filters = payload.get("filters")
+    comparisons = []
+    if isinstance(raw_filters, list):
+        comparisons = [item for item in (_comparison_from_payload(entry) for entry in raw_filters) if item is not None]
+
+    filter_node = None
+    if len(comparisons) == 1:
+        filter_node = comparisons[0]
+    elif len(comparisons) > 1:
+        filter_node = Operation(operator=Operator.AND, arguments=comparisons)
+    return _SimpleStructuredQuery(query=query, filter_node=filter_node)
+
+
+class _SimpleFilterConstructor:
+    def invoke(self, payload: dict):
+        query = str((payload or {}).get("query", "") or "").strip()
+        messages = [
+            SystemMessage(content=_FILTER_EXTRACTION_PROMPT),
+            HumanMessage(content=query),
+        ]
+        response = _invoke_llm_with_timeout(_get_filter_llm(), messages, label="self-query constructor")
+        extracted = _extract_json_object(getattr(response, "content", "") or "")
+        if not extracted:
+            raise RuntimeError("self-query constructor returned invalid JSON")
+        return _structured_query_from_payload(extracted, query)
+
+
 @lru_cache(maxsize=1)
 def _get_query_constructor():
-    allowed_kinds = ", ".join(CANONICAL_DOCUMENT_KINDS)
-    attribute_info = [
-        AttributeInfo(name="file_name", description="The source filename including extension.", type="string"),
-        AttributeInfo(name="source_path", description="Absolute source path for the ingested file.", type="string"),
-        AttributeInfo(name="source_type", description="The file type such as pdf, docx, csv, txt, image, html.", type="string"),
-        AttributeInfo(
-            name="document_kind",
-            description=(
-                f"High-level content kind. Allowed values: {allowed_kinds}. "
-                "Treat note/notes/notebook/memo/journal as document."
-            ),
-            type="string",
-        ),
-        AttributeInfo(name="author", description="Document or book author when available.", type="string"),
-        AttributeInfo(name="title", description="Document title when available.", type="string"),
-        AttributeInfo(name="owner", description="Filesystem owner username.", type="string"),
-        AttributeInfo(name="source_mtime_date", description="Last modified date in ISO format YYYY-MM-DD.", type="string"),
-        AttributeInfo(name="workspace_id", description="Logical workspace or folder scope for the file.", type="string"),
-        AttributeInfo(name="page", description="Page number for page-based sources such as PDFs.", type="integer"),
-    ]
-    today = _today()
-    yesterday = today - timedelta(days=1)
-    examples = [
-        (
-            "give me log files from yesterday",
-            {
-                "query": "log files",
-                "filter": f"and(eq('document_kind', 'log'), eq('source_mtime_date', '{yesterday.isoformat()}'))",
-            },
-        ),
-        (
-            "give me all the books I have by Franz Kafka",
-            {
-                "query": "books",
-                "filter": "and(eq('document_kind', 'book'), eq('author', 'Franz Kafka'))",
-            },
-        ),
-        (
-            "give me writing ideas from my notes",
-            {
-                "query": "writing ideas",
-                "filter": "eq('document_kind', 'document')",
-            },
-        ),
-        (
-            "search in error_report.log",
-            {
-                "query": "search",
-                "filter": "eq('file_name', 'error_report.log')",
-            },
-        ),
-        (
-            'look for the file with name containing "nexus" and "logs" in the documents table',
-            {
-                "query": "file",
-                "filter": "and(like('file_name', '%nexus%'), like('file_name', '%logs%'))",
-            },
-        ),
-        (
-            "extract full content of nexus-local-logs-debug.txt",
-            {
-                "query": "full content",
-                "filter": "eq('file_name', 'nexus-local-logs-debug.txt')",
-            },
-        ),
-    ]
-    return load_query_constructor_runnable(
-        llm=_get_filter_llm(),
-        document_contents="A local multimodal index of personal files, books, logs, screenshots, and documents.",
-        attribute_info=attribute_info,
-        examples=examples,
-    )
+    return _SimpleFilterConstructor()
 
 
 def _extract_json_object(raw_text: str) -> dict:
@@ -295,8 +318,10 @@ def _llm_normalize_query(query: str) -> tuple[str, list[str], str, bool]:
         SystemMessage(content=_QUERY_NORMALIZER_PROMPT),
         HumanMessage(content=query),
     ]
+    started_at = time.perf_counter()
+    print(f"query normalizer start | query={query[:160]!r}")
     try:
-        response = _get_query_normalizer_llm().invoke(messages)
+        response = _invoke_llm_with_timeout(_get_query_normalizer_llm(), messages, label="query normalizer")
     except Exception as exc:
         print(f"⚠️ Query normalizer failed: {exc}")
         fallback_query = _deterministic_corrective_rewrite(query) or query
@@ -304,6 +329,9 @@ def _llm_normalize_query(query: str) -> tuple[str, list[str], str, bool]:
         if fallback_query != query:
             print(f"query normalizer deterministic rewrite | clean_query={fallback_query!r}")
         return fallback_query, fallback_phrases, "low", False
+    finally:
+        elapsed_ms = round((time.perf_counter() - started_at) * 1000, 1)
+        print(f"query normalizer end | elapsed_ms={elapsed_ms}")
 
     payload = _extract_json_object(getattr(response, "content", "") or "")
     if not payload:
@@ -619,6 +647,12 @@ def _build_structured_query_with_decisions(
     file_filter: Optional[str] = None,
     workspace_id: Optional[str] = None,
 ) -> tuple[object, str, Optional[str], list[FilterClauseDecision]]:
+    started_at = time.perf_counter()
+    print(
+        "self-query build start | "
+        f"workspace_id={workspace_id or 'global'} | file_filter={file_filter or 'none'} | "
+        f"query={query[:160]!r}"
+    )
     normalized_query = _normalize_relative_dates(query)
     preprocessed_query = _deterministic_corrective_rewrite(normalized_query) or normalized_query
     if preprocessed_query != normalized_query:
@@ -634,7 +668,11 @@ def _build_structured_query_with_decisions(
     llm_confidence = "low"
 
     try:
+        constructor_started_at = time.perf_counter()
+        print("self-query constructor start")
         structured_query = _get_query_constructor().invoke({"query": preprocessed_query})
+        constructor_elapsed_ms = round((time.perf_counter() - constructor_started_at) * 1000, 1)
+        print(f"self-query constructor end | elapsed_ms={constructor_elapsed_ms}")
     except Exception as exc:
         print(f"⚠️ Self-query constructor failed, using fallback metadata parsing: {exc}")
         llm_normalized_query, llm_focus_phrases, llm_confidence, used_llm_normalizer = _llm_normalize_query(preprocessed_query)
@@ -712,6 +750,8 @@ def _build_structured_query_with_decisions(
         print(f"self-query dropped clauses: {dropped_summary}")
 
     print(f"self-query resolved | text_query={text_query!r} | sql_filter={sql_filter!r}")
+    elapsed_ms = round((time.perf_counter() - started_at) * 1000, 1)
+    print(f"self-query build end | elapsed_ms={elapsed_ms}")
     return structured_query, text_query, sql_filter, decisions
 
 

@@ -1,7 +1,6 @@
 import csv
 import hashlib
 import json
-import mimetypes
 import os
 import re
 import uuid
@@ -14,9 +13,10 @@ from langchain_ollama import OllamaEmbeddings
 
 from src.core.config import Config
 from src.embeddings.multimodal_onnx import get_multimodal_embedder
+from src.rag.file_type_detector import SUPPORTED_EXTENSIONS, detect_file_type
 from src.rag.metadata_taxonomy import normalize_document_kind
 from src.rag.query_filters import compile_multimodal_filter_plan
-from src.rag.lancedb_store import delete_rows, load_rows, search as search_rows, upsert_rows
+from src.rag.lancedb_store import delete_rows, load_rows, rewrite_rows, search as search_rows, upsert_rows
 from src.rag.schemas import build_child_row, build_parent_row, build_registry_row, parse_extra
 
 try:
@@ -25,19 +25,7 @@ except ImportError:  # Windows
     _pwd = None
 
 
-SUPPORTED_MULTIMODAL_EXTENSIONS = (
-    ".pdf",
-    ".docx",
-    ".txt",
-    ".log",
-    ".md",
-    ".csv",
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".html",
-    ".htm",
-)
+SUPPORTED_MULTIMODAL_EXTENSIONS = SUPPORTED_EXTENSIONS
 
 _NOMIC_EMBEDDER = OllamaEmbeddings(
     model="nomic-embed-text",
@@ -88,20 +76,7 @@ def _child_chunks(text: str) -> list[str]:
 
 
 def _detect_source_type(path: str) -> str:
-    ext = os.path.splitext(path)[1].lower()
-    return {
-        ".pdf": "pdf",
-        ".docx": "docx",
-        ".txt": "txt",
-        ".log": "log",
-        ".md": "md",
-        ".csv": "csv",
-        ".png": "image",
-        ".jpg": "image",
-        ".jpeg": "image",
-        ".html": "html",
-        ".htm": "html",
-    }.get(ext, ext.lstrip(".") or "unknown")
+    return detect_file_type(path).source_type
 
 
 def _get_file_owner(path: str) -> str:
@@ -313,11 +288,14 @@ def _save_cached_image(image, doc_hash: str, stem: str) -> str:
     return path
 
 
-def _load_registry_row(source_path: str):
+def _load_registry_row(source_path: str, workspace_id: Optional[str] = None):
     abs_path = os.path.abspath(source_path)
     for row in load_rows(Config.MULTIMODAL_DOCUMENTS_TABLE):
-        if row.get("source_path") == abs_path:
-            return row
+        if row.get("source_path") != abs_path:
+            continue
+        if workspace_id and row.get("workspace_id") != workspace_id:
+            continue
+        return row
     return None
 
 
@@ -679,7 +657,7 @@ def _extract_image_content(path: str, doc_hash: str, base_metadata: dict) -> tup
         return parents, nomic_children, clip_children
 
     image = Image.open(path).convert("RGB")
-    mime = mimetypes.guess_type(path)[0] or "image/png"
+    mime = detect_file_type(path).mime_type or "image/png"
     cached_path = _save_cached_image(image, doc_hash, "image_0")
     _append_image_parent(
         parents,
@@ -710,19 +688,31 @@ def _extract_content(path: str, source_type: str, doc_hash: str, base_metadata: 
     return [], [], []
 
 
-def ingest_file_multimodal(path: str, progress_callback: Optional[Callable] = None) -> tuple[bool, int, Optional[str]]:
+def ingest_file_multimodal(
+    path: str,
+    progress_callback: Optional[Callable] = None,
+    workspace_id: str = "global",
+) -> tuple[bool, int, Optional[str]]:
     abs_path = os.path.abspath(os.path.expanduser(path))
     if not os.path.isfile(abs_path):
         return False, 0, None
 
-    if os.path.splitext(abs_path)[1].lower() not in SUPPORTED_MULTIMODAL_EXTENSIONS:
+    detected_type = detect_file_type(abs_path)
+    if not detected_type.ingestible:
         return False, 0, None
 
-    source_type = _detect_source_type(abs_path)
+    source_type = detected_type.source_type
     doc_hash = _compute_file_hash(abs_path)
     raw_title, raw_author = _extract_file_level_metadata(abs_path, source_type)
-    base_metadata = _base_metadata(abs_path, source_type, doc_hash, raw_title=raw_title, raw_author=raw_author)
-    existing = _load_registry_row(abs_path)
+    base_metadata = _base_metadata(
+        abs_path,
+        source_type,
+        doc_hash,
+        workspace_id=workspace_id or "global",
+        raw_title=raw_title,
+        raw_author=raw_author,
+    )
+    existing = _load_registry_row(abs_path, workspace_id=workspace_id or "global")
     if existing and existing.get("hash") == doc_hash:
         count = int(existing.get("num_children") or existing.get("num_chunks") or 0)
         return True, count, doc_hash
@@ -765,12 +755,18 @@ def ingest_file_multimodal(path: str, progress_callback: Optional[Callable] = No
     return True, total_children, doc_hash
 
 
-def ingest_paths(paths: list[str], db_path: str = "", table_name: str = "", embedder=None):
+def ingest_paths(
+    paths: list[str],
+    db_path: str = "",
+    table_name: str = "",
+    embedder=None,
+    workspace_id: str = "global",
+):
     _ = db_path, table_name, embedder
     successes = 0
     total_rows = 0
     for path in paths:
-        success, row_count, _ = ingest_file_multimodal(path)
+        success, row_count, _ = ingest_file_multimodal(path, workspace_id=workspace_id)
         if success:
             successes += 1
             total_rows += row_count
@@ -797,12 +793,53 @@ def purge_multimodal_prefix(path_prefix: str):
     delete_rows(Config.MULTIMODAL_DOCUMENTS_TABLE, delete_filter)
 
 
-def is_source_indexed_multimodal(source_path: str) -> bool:
+def is_source_indexed_multimodal(source_path: str, workspace_id: Optional[str] = None) -> bool:
     abs_path = os.path.abspath(source_path)
     for row in load_rows(Config.MULTIMODAL_DOCUMENTS_TABLE):
-        if row.get("source_path") == abs_path:
-            return True
+        if row.get("source_path") != abs_path:
+            continue
+        if workspace_id and row.get("workspace_id") != workspace_id:
+            continue
+        return True
     return False
+
+
+def has_indexed_documents_for_prefix(path_prefix: str, workspace_id: Optional[str] = None) -> bool:
+    abs_prefix = os.path.abspath(path_prefix)
+    for row in load_rows(Config.MULTIMODAL_DOCUMENTS_TABLE):
+        source_path = os.path.abspath(row.get("source_path") or "")
+        if not source_path.startswith(abs_prefix):
+            continue
+        if workspace_id and row.get("workspace_id") != workspace_id:
+            continue
+        return True
+    return False
+
+
+def reassign_workspace_prefix(path_prefix: str, workspace_id: str):
+    abs_prefix = os.path.abspath(path_prefix)
+    normalized_workspace_id = (workspace_id or "").strip() or "global"
+
+    def _rewrite_row(row: dict):
+        source_path = os.path.abspath(row.get("source_path") or "")
+        if not source_path.startswith(abs_prefix):
+            return row
+
+        updated = dict(row)
+        updated["workspace_id"] = normalized_workspace_id
+        extra = parse_extra(updated.get("extra"))
+        if extra.get("workspace_id") != normalized_workspace_id:
+            extra["workspace_id"] = normalized_workspace_id
+            updated["extra"] = json.dumps(extra, ensure_ascii=True)
+        return updated
+
+    for table_name in (
+        Config.MULTIMODAL_PARENT_TABLE,
+        Config.MULTIMODAL_TEXT_CHILD_TABLE,
+        Config.MULTIMODAL_CLIP_CHILD_TABLE,
+        Config.MULTIMODAL_DOCUMENTS_TABLE,
+    ):
+        rewrite_rows(table_name, _rewrite_row)
 
 
 def _query_prefers_images(query: str) -> bool:
@@ -891,7 +928,28 @@ def _build_source_path_in_filter(paths: list[str]) -> Optional[str]:
     return f"source_path IN ({', '.join(escaped_paths)})"
 
 
-def _lexical_source_path_filter(query: str, file_filter: Optional[str], limit: int = 20) -> Optional[str]:
+def _combine_sql_filters(*filters: Optional[str]) -> Optional[str]:
+    parts = [part.strip() for part in filters if isinstance(part, str) and part.strip()]
+    if not parts:
+        return None
+    if len(parts) == 1:
+        return parts[0]
+    return " AND ".join(f"({part})" for part in parts)
+
+
+def _workspace_sql_filter(workspace_id: Optional[str]) -> Optional[str]:
+    normalized = (workspace_id or "").strip()
+    if not normalized:
+        return None
+    return f"workspace_id = '{_escape_sql(normalized)}'"
+
+
+def _lexical_source_path_filter(
+    query: str,
+    file_filter: Optional[str],
+    workspace_id: Optional[str] = None,
+    limit: int = 20,
+) -> Optional[str]:
     abs_filter = os.path.abspath(file_filter) if file_filter else None
     terms = _query_terms(query)
     if not terms:
@@ -903,6 +961,8 @@ def _lexical_source_path_filter(query: str, file_filter: Optional[str], limit: i
         if not source_path:
             continue
         if abs_filter and source_path != abs_filter:
+            continue
+        if workspace_id and row.get("workspace_id") != workspace_id:
             continue
 
         haystack = " ".join(
@@ -921,7 +981,8 @@ def _lexical_source_path_filter(query: str, file_filter: Optional[str], limit: i
         return None
 
     ranked_paths = [path for _, path in sorted(scored, key=lambda item: (-item[0], item[1]))]
-    return _build_source_path_in_filter(ranked_paths[:limit])
+    path_filter = _build_source_path_in_filter(ranked_paths[:limit])
+    return _combine_sql_filters(path_filter, _workspace_sql_filter(workspace_id))
 
 
 def _row_score(row: dict, query_prefers_images: bool) -> float:
@@ -947,13 +1008,15 @@ def _row_score(row: dict, query_prefers_images: bool) -> float:
     return base
 
 
-def _load_parent_lookup(file_filter: Optional[str]) -> dict[str, dict]:
+def _load_parent_lookup(file_filter: Optional[str], workspace_id: Optional[str] = None) -> dict[str, dict]:
     parents = load_rows(Config.MULTIMODAL_PARENT_TABLE)
     lookup = {}
     abs_filter = os.path.abspath(file_filter) if file_filter else None
     for row in parents:
         source_path = row.get("source_path")
         if abs_filter and os.path.abspath(source_path or "") != abs_filter:
+            continue
+        if workspace_id and row.get("workspace_id") != workspace_id:
             continue
         lookup[row.get("parent_id")] = row
     return lookup
@@ -1035,7 +1098,11 @@ def search_multimodal(query: str, top_k: int = 5, file_filter: Optional[str] = N
             break
 
     if not child_hits:
-        lexical_filter = _lexical_source_path_filter(query, file_filter=file_filter)
+        lexical_filter = _lexical_source_path_filter(
+            query,
+            file_filter=file_filter,
+            workspace_id=workspace_id,
+        )
         if lexical_filter and lexical_filter not in {sql for _, sql in attempts}:
             child_hits = _run_semantic_retrieval_pass(
                 label="lexical+semantic",
@@ -1048,7 +1115,7 @@ def search_multimodal(query: str, top_k: int = 5, file_filter: Optional[str] = N
     if not child_hits:
         return []
 
-    parent_lookup = _load_parent_lookup(file_filter)
+    parent_lookup = _load_parent_lookup(file_filter, workspace_id=workspace_id)
     best_by_parent = {}
     for child in child_hits:
         parent_id = child.get("parent_id")

@@ -5,10 +5,12 @@ import re
 import flet as ft
 from src.ui.styles import ColorPalette, TextStyles
 from src.core.config import Config
+from src.core.model_routing import AUX_TASK_CHAT_TITLE, get_model_for_task, log_model_selection
 from src.core.utils import run_ollama_pull
 from src.core.user_settings import save_setting, get_setting
 from src.ui.agent_interface import run_agent_stream
 from src.core.database import ChatRepository
+from src.core.workspace_manager import WorkspaceManager
 from src.ui.managers.notification_manager import NotificationManager
 import threading
 
@@ -21,6 +23,15 @@ def _feature_ready(page: ft.Page, key: str) -> bool:
     return bool(check.get("ready", False))
 
 class ChatView(ft.Container):
+    USER_MESSAGE_MAX_WIDTH_RATIO = 0.50
+    ASSISTANT_MESSAGE_MAX_WIDTH_RATIO = 0.80
+    USER_MESSAGE_MAX_WIDTH_CAP = None
+    ASSISTANT_MESSAGE_MAX_WIDTH_CAP = None
+    MESSAGE_BUBBLE_PADDING = 15
+    CHAT_HISTORY_HORIZONTAL_PADDING = 40
+    MESSAGE_ROW_SPACING = 8
+    MIN_MESSAGE_MAX_WIDTH = 240
+
     def __init__(self, on_update=None, page=None, on_view_file=None):
         super().__init__()
         self.app_page = page  # Store page reference (can't use self.page, it's a Flet property)
@@ -29,11 +40,14 @@ class ChatView(ft.Container):
         from src.ui.managers.notification_manager import NotificationManager
         self.notification_manager = NotificationManager
         self.current_chat_id = None
+        self.workspace_manager = WorkspaceManager()
         self.on_update = on_update
         
         self.expand = True
         self.bgcolor = ColorPalette.BG_PRIMARY
         self.padding = 0  # Padding handling inside
+        self._chat_width_provider = None
+        self._message_layouts = []
         self.content = self.build_content()
         self.is_processing = False
         self._processing_chat_id = None
@@ -89,6 +103,86 @@ class ChatView(ft.Container):
     def _clean_assistant_text_for_storage(text: str) -> str:
         """Persist only final user-visible answer text (no reasoning tags)."""
         return ChatView._strip_think_content(text)
+
+    def set_chat_width_provider(self, provider):
+        self._chat_width_provider = provider
+
+    def _get_available_chat_width(self) -> int:
+        available_width = None
+
+        if callable(self._chat_width_provider):
+            try:
+                available_width = self._chat_width_provider()
+            except Exception:
+                available_width = None
+
+        if available_width is None and self.app_page is not None:
+            available_width = getattr(self.app_page, "width", None)
+
+        if available_width is None:
+            available_width = 900
+
+        return max(int(available_width), self.MIN_MESSAGE_MAX_WIDTH)
+
+    def _get_message_width_ratio(self, is_user: bool) -> float:
+        return (
+            self.USER_MESSAGE_MAX_WIDTH_RATIO
+            if is_user
+            else self.ASSISTANT_MESSAGE_MAX_WIDTH_RATIO
+        )
+
+    def _get_message_width_cap(self, is_user: bool):
+        return (
+            self.USER_MESSAGE_MAX_WIDTH_CAP
+            if is_user
+            else self.ASSISTANT_MESSAGE_MAX_WIDTH_CAP
+        )
+
+    def _get_message_max_width(self, is_user: bool) -> int:
+        available_width = self._get_available_chat_width()
+        usable_width = max(
+            available_width - self.CHAT_HISTORY_HORIZONTAL_PADDING,
+            self.MIN_MESSAGE_MAX_WIDTH,
+        )
+        configured_width = int(usable_width * self._get_message_width_ratio(is_user))
+        width_cap = self._get_message_width_cap(is_user)
+
+        if width_cap is not None:
+            configured_width = min(configured_width, int(width_cap))
+
+        return max(configured_width, self.MIN_MESSAGE_MAX_WIDTH)
+
+    def _get_assistant_content_width(self) -> int:
+        return max(
+            self._get_message_max_width(False) - (self.MESSAGE_BUBBLE_PADDING * 2),
+            self.MIN_MESSAGE_MAX_WIDTH - (self.MESSAGE_BUBBLE_PADDING * 2),
+        )
+
+    def _clear_visible_messages(self):
+        self.chat_history.controls.clear()
+        self._message_layouts.clear()
+
+    def refresh_message_widths(self):
+        if not self._message_layouts:
+            return
+
+        assistant_content_width = self._get_assistant_content_width()
+
+        for layout in self._message_layouts:
+            bubble_shell = layout["shell"]
+            bubble = layout["bubble"]
+            is_user = layout["is_user"]
+
+            bubble_shell.width = self._get_message_max_width(is_user)
+
+            if not is_user:
+                raw_text = layout.get("raw_text", "")
+                bubble.content = self._parse_message_content(
+                    raw_text,
+                    max_content_width=assistant_content_width,
+                )
+
+        self._safe_update_chat_history()
 
     def build_content(self):
         # File Viewer Dialog
@@ -152,17 +246,25 @@ class ChatView(ft.Container):
             on_select=self.on_model_change
         )
         
+        self.workspace_indicator = ft.Container(visible=False, height=0)
         self.focused_file_indicator = ft.Container(visible=False, height=0)
 
         return ft.Column(
             controls=[
                 self.chat_history,
+                self.workspace_indicator,
                 # Focused File Indicator
                 self.focused_file_indicator,
                 ft.Container(
                     content=ft.Column([
                         ft.Row(
                             controls=[
+                                ft.IconButton(
+                                    ft.Icons.FOLDER_OPEN,
+                                    icon_color=ColorPalette.TEXT_SECONDARY,
+                                    tooltip="Choose Workspace Folder",
+                                    on_click=self.handle_select_workspace
+                                ),
                                 ft.IconButton(
                                     ft.Icons.ATTACH_FILE, 
                                     icon_color=ColorPalette.TEXT_SECONDARY, 
@@ -199,10 +301,14 @@ class ChatView(ft.Container):
 
     def start_new_chat(self):
         print("=== START_NEW_CHAT called ===")
-        self.clear_focus(None) # Clear any existing file focus
         self.current_chat_id = None
+        self.app_page.data["workspace_id"] = None
+        self.app_page.data["workspace_path"] = None
+        self.app_page.data["focused_file"] = None
+        self.update_workspace_ui(None)
+        self.update_focus_ui(None)
         print(f"current_chat_id set to: {self.current_chat_id}")
-        self.chat_history.controls.clear()
+        self._clear_visible_messages()
         self.add_message("Nexus is ready. Ask me anything. I keep the answers useful and the jokes light.", is_user=False)
         self._safe_update_chat_history()
 
@@ -212,8 +318,11 @@ class ChatView(ft.Container):
         try:
             chat = self.repo.get_chat(chat_id)
             focused_file = chat.get("focused_file") if chat else None
+            workspace_id = chat.get("workspace_id") if chat else None
             self.app_page.data["focused_file"] = focused_file
+            self.app_page.data["workspace_id"] = workspace_id
             self.update_focus_ui(focused_file)
+            self._sync_workspace_ui(workspace_id)
         except Exception as e:
             NotificationManager.error(f"Failed to load chat: {e}")
 
@@ -236,7 +345,7 @@ class ChatView(ft.Container):
 
     def _render_chat_history(self, chat_id: str):
         """Render a chat from DB and append the in-flight placeholder when relevant."""
-        self.chat_history.controls.clear()
+        self._clear_visible_messages()
 
         try:
             messages = self.repo.get_chat_history(chat_id)
@@ -283,7 +392,8 @@ class ChatView(ft.Container):
             print("Background: Imports successful. Getting LLM...")
             
             # Use a fast model if available, or just the current one
-            model_name = get_setting("model_name", "llama3.1")
+            model_name = get_model_for_task(AUX_TASK_CHAT_TITLE)
+            log_model_selection(AUX_TASK_CHAT_TITLE, model_name)
             print(f"Background: Using model {model_name} for title creation")
             llm = get_cached_llm(model_name, with_tools=False)
             print("Background: LLM acquired. Invoking...")
@@ -382,6 +492,80 @@ class ChatView(ft.Container):
         self.update_focus_ui(None)
         # NotificationManager.info("Focus cleared. Searching all knowledge.")
 
+    async def handle_select_workspace(self, e):
+        try:
+            path = await ft.FilePicker().get_directory_path()
+            if not path:
+                return
+
+            NotificationManager.info(f"Preparing workspace for: {os.path.basename(path) or path}")
+
+            def _ensure_workspace():
+                return self.workspace_manager.ensure_workspace(path)
+
+            success, msg, workspace = await asyncio.to_thread(_ensure_workspace)
+            if not success or not workspace:
+                NotificationManager.error(msg)
+                return
+
+            self.app_page.data["workspace_id"] = workspace["id"]
+            self.app_page.data["workspace_path"] = workspace["root_path"]
+            if self.current_chat_id:
+                self.repo.update_chat_workspace(self.current_chat_id, workspace["id"])
+            self.update_workspace_ui(workspace["root_path"])
+            NotificationManager.success(msg)
+        except Exception as ex:
+            NotificationManager.error(f"Workspace selection failed: {ex}")
+            print(f"Workspace selection failed: {ex}")
+
+    def clear_workspace(self, e):
+        self.app_page.data["workspace_id"] = None
+        self.app_page.data["workspace_path"] = None
+        if self.current_chat_id:
+            self.repo.update_chat_workspace(self.current_chat_id, None)
+        self.update_workspace_ui(None)
+
+    def _sync_workspace_ui(self, workspace_id):
+        workspace_path = None
+        if workspace_id:
+            workspace = self.workspace_manager.get_workspace(workspace_id)
+            if workspace:
+                workspace_path = workspace.get("root_path")
+        self.app_page.data["workspace_path"] = workspace_path
+        self.update_workspace_ui(workspace_path)
+
+    def update_workspace_ui(self, workspace_path):
+        if workspace_path:
+            folder_name = os.path.basename(workspace_path.rstrip(os.sep)) or workspace_path
+            self.workspace_indicator.content = ft.Row(
+                [
+                    ft.Icon(ft.Icons.FOLDER_OPEN, size=16, color=ColorPalette.ACCENT),
+                    ft.Text(
+                        f"Workspace: {folder_name}",
+                        color=ColorPalette.ACCENT,
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                    ),
+                    ft.IconButton(
+                        ft.Icons.CLOSE,
+                        scale=0.5,
+                        icon_color=ColorPalette.TEXT_SECONDARY,
+                        on_click=self.clear_workspace,
+                        tooltip="Clear Workspace",
+                    ),
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+            )
+            self.workspace_indicator.visible = True
+            self.workspace_indicator.height = 30
+            self.workspace_indicator.bgcolor = ColorPalette.BG_SECONDARY
+            self.workspace_indicator.border = ft.border.all(1, ColorPalette.ACCENT)
+        else:
+            self.workspace_indicator.visible = False
+            self.workspace_indicator.height = 0
+
+        self.workspace_indicator.update()
+
     def update_focus_ui(self, file_path):
         if file_path:
              import os
@@ -429,7 +613,8 @@ class ChatView(ft.Container):
             print(">>> Creating new chat session...")
             self.current_chat_id = self.repo.create_chat(
                 title="New Chat",
-                focused_file=self.app_page.data.get("focused_file")
+                focused_file=self.app_page.data.get("focused_file"),
+                workspace_id=self.app_page.data.get("workspace_id"),
             )
             is_new_chat = True
             print(f">>> New chat created with ID: {self.current_chat_id}")
@@ -481,6 +666,7 @@ class ChatView(ft.Container):
             previous_reasoning = self.repo.get_last_assistant_reasoning(origin_chat_id)
             context = {
                 "focused_file": self.app_page.data.get("focused_file"),
+                "workspace_id": self.app_page.data.get("workspace_id"),
                 "last_assistant_reasoning": previous_reasoning or "",
             }
             
@@ -495,7 +681,18 @@ class ChatView(ft.Container):
                     # Re-parse and update the entire content of the bubble only
                     # when the originating chat is currently visible.
                     target_control = self._streaming_bot_message_control or bot_message_control
-                    target_control.content = self._parse_message_content(full_response)
+                    target_control.data = {
+                        "raw_text": full_response,
+                        "is_user": False,
+                    }
+                    for layout in self._message_layouts:
+                        if layout["bubble"] == target_control:
+                            layout["raw_text"] = full_response
+                            break
+                    target_control.content = self._parse_message_content(
+                        full_response,
+                        max_content_width=self._get_assistant_content_width(),
+                    )
                     # Update via parent (chat_history) instead of the bubble directly,
                     # because the bubble may not have a page reference yet if
                     # the initial chat_history.update() in add_message was silently caught.
@@ -516,6 +713,14 @@ class ChatView(ft.Container):
             print(f"Error details: {ex}")
             if self.current_chat_id == origin_chat_id:
                 target_control = self._streaming_bot_message_control or bot_message_control
+                target_control.data = {
+                    "raw_text": f"Error: {str(ex)}",
+                    "is_user": False,
+                }
+                for layout in self._message_layouts:
+                    if layout["bubble"] == target_control:
+                        layout["raw_text"] = f"Error: {str(ex)}"
+                        break
                 target_control.content = ft.Text(f"Error: {str(ex)}", color=ColorPalette.ERROR)
                 self._safe_update_chat_history()
         
@@ -524,7 +729,7 @@ class ChatView(ft.Container):
         self._streaming_bot_message_control = None
         self._streaming_response_buffer = ""
 
-    def _parse_message_content(self, text):
+    def _parse_message_content(self, text, max_content_width=None):
         """
         Parses message text to handle <think>...</think> tags.
         Returns a Column of controls (Markdown + ExpansionTile).
@@ -570,7 +775,7 @@ class ChatView(ft.Container):
                                     src=base64.b64decode(image_b64),
                                     fit=ft.BoxFit.CONTAIN,
                                     border_radius=10,
-                                    width=560,
+                                    width=max_content_width or 560,
                                 ),
                                 margin=ft.margin.only(top=5, bottom=5),
                             )
@@ -766,6 +971,7 @@ class ChatView(ft.Container):
     def add_message(self, text, is_user):
         alignment = ft.MainAxisAlignment.END if is_user else ft.MainAxisAlignment.START
         bg_color = ColorPalette.ACCENT if is_user else ColorPalette.BG_SECONDARY
+        message_max_width = self._get_message_max_width(is_user)
         
         avatar = ft.CircleAvatar(
             content=ft.Text("U" if is_user else "N"),
@@ -779,29 +985,48 @@ class ChatView(ft.Container):
             content_control = ft.Text(text, color=ColorPalette.TEXT_PRIMARY, size=14)
         else:
             # Bot messages use the parser
-            content_control = self._parse_message_content(text)
+            content_control = self._parse_message_content(
+                text,
+                max_content_width=self._get_assistant_content_width(),
+            )
 
         message_bubble = ft.Container(
             content=content_control,
             bgcolor=bg_color,
-            padding=15,
+            padding=self.MESSAGE_BUBBLE_PADDING,
             border_radius=ft.BorderRadius(
                 top_left=15, top_right=15, 
                 bottom_left=0 if is_user else 15, 
                 bottom_right=15 if is_user else 0
             ),
-            width=600
+            data={"raw_text": text, "is_user": is_user},
+        )
+
+        bubble_shell = ft.Container(
+            content=message_bubble,
+            width=message_max_width,
+            alignment=ft.Alignment(1, 0) if is_user else ft.Alignment(-1, 0),
         )
  
-        row_controls = [message_bubble]
+        row_controls = [bubble_shell]
         if not is_user:
             row_controls.insert(0, avatar)
         
+        self._message_layouts.append(
+            {
+                "shell": bubble_shell,
+                "bubble": message_bubble,
+                "is_user": is_user,
+                "raw_text": text,
+            }
+        )
+
         self.chat_history.controls.append(
             ft.Row(
                 controls=row_controls,
                 alignment=alignment,
                 vertical_alignment=ft.CrossAxisAlignment.START,
+                spacing=self.MESSAGE_ROW_SPACING,
             )
         )
         self._safe_update_chat_history()

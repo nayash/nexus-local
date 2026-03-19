@@ -42,7 +42,13 @@ class WatcherManager:
 
         # 4. RECORD: Save to DB (Must be before organization for repo lookups)
         try:
-            self.repo.add_watched_path(path, safe_name, strategy="organize_and_ingest")
+            self.repo.add_watched_path(
+                path,
+                safe_name,
+                strategy="organize_and_ingest",
+                watch_mode="organize_and_ingest",
+                recursive=False,
+            )
         except Exception as e:
             return False, f"Database save failed: {str(e)}"
         
@@ -61,7 +67,7 @@ class WatcherManager:
 
         # 6. START: Start watching
         self.service.start()
-        self.service.watch_path(path)
+        self.service.watch_path(path, watch_mode="organize_and_ingest", recursive=False)
         
         return True, f"Successfully started watching '{os.path.basename(path)}'"
 

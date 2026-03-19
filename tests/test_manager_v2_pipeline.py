@@ -1,8 +1,8 @@
 from langchain_core.messages import HumanMessage
 
 from src.agents import graph as graph_module
-from src.agents.contracts import WorkerResult
-from src.agents.nodes_v2 import manager_review_node, tabular_worker_node
+from src.agents.contracts import IntentPacket, WorkerResult
+from src.agents.nodes_v2 import _task_from_intent, manager_review_node, tabular_worker_node
 from src.tools.schemas import SearchResult
 from src.tools.tool_results import build_final_response_artifact
 
@@ -39,7 +39,7 @@ def test_manager_review_enforces_hop_limit_without_extra_dispatch():
 def test_execute_local_retrieval_task_v2_hybrid_combines_semantic_and_inventory(monkeypatch):
     from src.tools import local as local_module
 
-    def fake_semantic(query, file_filter=None, top_k=10, apply_lexical_supplement=True):
+    def fake_semantic(query, file_filter=None, workspace_id=None, top_k=10, apply_lexical_supplement=True):
         assert apply_lexical_supplement is False
         return [
             SearchResult(
@@ -54,7 +54,7 @@ def test_execute_local_retrieval_task_v2_hybrid_combines_semantic_and_inventory(
     monkeypatch.setattr(
         local_module,
         "_resolve_direct_local_response_v2",
-        lambda query, file_filter="", explicit_mode="document_lookup": (
+        lambda query, file_filter="", workspace_id="", explicit_mode="document_lookup": (
             "",
             [
                 {"title": "Local File (md): writing_ideas.md", "url": "/tmp/writing_ideas.md", "type": "local"},
@@ -81,7 +81,7 @@ def test_search_local_routes_to_v2_when_pipeline_enabled(monkeypatch):
     monkeypatch.setattr(
         local_module,
         "_search_local_v2",
-        lambda query, file_filter="": [
+        lambda query, file_filter="", workspace_id="": [
             SearchResult(title="Info", url="", content="v2 path", source="local")
         ],
     )
@@ -124,3 +124,58 @@ def test_tabular_worker_preserves_plot_metadata_for_ui(monkeypatch):
 
     sources = result["evidence_bundle"]["source_metadata"]
     assert any(item.get("type") == "plot" for item in sources)
+
+
+def test_local_catalog_intent_maps_to_catalog_worker():
+    task = _task_from_intent(
+        IntentPacket(primary_intent="local_catalog", normalized_query="list files in workspace"),
+        query="list the files in this workspace",
+        focused_file="",
+    )
+
+    assert task.worker == "local_catalog_worker"
+    assert task.mode == "catalog"
+
+
+def test_execute_local_retrieval_task_v2_catalog_lists_workspace_files(monkeypatch):
+    from src.tools import local as local_module
+
+    monkeypatch.setattr(
+        local_module,
+        "_query_document_catalog",
+        lambda file_filter="", workspace_id="": [
+            {
+                "file_name": "Index",
+                "source_path": "/tmp/abalone/Index",
+                "source_type": "txt",
+                "workspace_id": "workspace-1",
+            },
+            {
+                "file_name": "abalone.data",
+                "source_path": "/tmp/abalone/abalone.data",
+                "source_type": "csv",
+                "workspace_id": "workspace-1",
+            },
+            {
+                "file_name": "abalone.names",
+                "source_path": "/tmp/abalone/abalone.names",
+                "source_type": "txt",
+                "workspace_id": "workspace-1",
+            },
+        ],
+    )
+
+    payload = local_module.execute_local_retrieval_task_v2(
+        query="list the files in this workspace",
+        workspace_id="workspace-1",
+        mode="catalog",
+    )
+    result = WorkerResult.model_validate(payload)
+
+    assert result.worker == "local_catalog_worker"
+    assert result.status == "ok"
+    assert "I found 3 indexed file(s)" in result.summary
+    assert "Index" in result.summary
+    assert "abalone.data" in result.summary
+    assert "abalone.names" in result.summary
+    assert len(result.source_metadata) == 3

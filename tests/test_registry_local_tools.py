@@ -14,7 +14,10 @@ def test_local_search_tool_stays_semantic_only(monkeypatch):
         def to_context_string(self):
             return "Writing ideas from local notes."
 
-    monkeypatch.setattr("src.tools.registry.search_local", lambda query, file_filter=None: [FakeResult()])
+    monkeypatch.setattr(
+        "src.tools.registry.search_local",
+        lambda query, file_filter=None, workspace_id="": [FakeResult()],
+    )
 
     content, metadata = local_search_tool.func("List down the writing ideas I had")
 
@@ -25,7 +28,7 @@ def test_local_search_tool_stays_semantic_only(monkeypatch):
 def test_lookup_local_files_tool_uses_document_lookup_path(monkeypatch):
     monkeypatch.setattr(
         "src.tools.registry.resolve_direct_local_response",
-        lambda query, file_filter="": (
+        lambda query, file_filter="", workspace_id="": (
             "",
             [
                 {"title": "Local File (md): project_report.md", "url": "/tmp/project_report.md", "type": "local"},

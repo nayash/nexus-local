@@ -100,6 +100,22 @@ def test_deterministic_corrective_rewrite_runs_when_llm_normalizer_fails(monkeyp
     assert plan.text_query.lower().startswith("list down the")
 
 
+def test_constructor_timeout_falls_back_to_normalizer(monkeypatch):
+    monkeypatch.setattr(
+        "src.rag.query_filters._get_query_constructor",
+        lambda: (_ for _ in ()).throw(TimeoutError("timed out")),
+    )
+    monkeypatch.setattr(
+        "src.rag.query_filters._llm_normalize_query",
+        lambda query: ("Index file content", ["Index"], "high", True),
+    )
+
+    plan = compile_multimodal_filter_plan('explain the content of "Index" file')
+
+    assert plan.text_query == "Index file content"
+    assert "Index" in (plan.strict_sql_filter or "")
+
+
 def test_reranker_prioritizes_relevant_note_and_deduplicates_same_source():
     rows = [
         {
@@ -143,7 +159,7 @@ def test_explicit_file_inventory_query_forces_document_lookup_even_when_planner_
     )
     monkeypatch.setattr(
         "src.tools.local._query_documents_table",
-        lambda query, file_filter="": [
+        lambda query, file_filter="", workspace_id="": [
             {
                 "title": "Text Based Adventure - Abaddon Hotel",
                 "file_name": "abaddon.md",
@@ -168,7 +184,7 @@ def test_content_query_does_not_short_circuit_to_file_listing(monkeypatch):
     )
     monkeypatch.setattr(
         "src.tools.local._query_documents_table",
-        lambda query, file_filter="": [
+        lambda query, file_filter="", workspace_id="": [
             {
                 "title": "Writing ideas",
                 "file_name": "writing_ideas.md",
@@ -189,7 +205,7 @@ def test_single_match_snippet_query_defers_to_semantic_when_not_metadata(monkeyp
     )
     monkeypatch.setattr(
         "src.tools.local._query_documents_table",
-        lambda query, file_filter="": [
+        lambda query, file_filter="", workspace_id="": [
             {
                 "title": "Project report",
                 "file_name": "project_report.md",
@@ -210,7 +226,7 @@ def test_single_match_file_location_query_returns_path(monkeypatch):
     )
     monkeypatch.setattr(
         "src.tools.local._query_documents_table",
-        lambda query, file_filter="": [
+        lambda query, file_filter="", workspace_id="": [
             {
                 "title": "Project report",
                 "file_name": "project_report.md",

@@ -14,8 +14,8 @@ from src.core.config import Config
 
 
 FILES = (
-    "text_encoder.onnx",
-    "vision_encoder.onnx",
+    "text_model.onnx",
+    "vision_model.onnx",
     "tokenizer.json",
     "tokenizer_config.json",
     "special_tokens_map.json",

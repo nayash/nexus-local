@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 WorkerName = Literal[
     "local_retrieval_worker",
+    "local_catalog_worker",
     "web_retrieval_worker",
     "identity_worker",
     "tabular_worker",
@@ -17,6 +18,7 @@ class IntentPacket(BaseModel):
     primary_intent: Literal[
         "local_content",
         "local_metadata",
+        "local_catalog",
         "web",
         "identity",
         "tabular",

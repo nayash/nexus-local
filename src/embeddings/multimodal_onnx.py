@@ -7,6 +7,15 @@ from src.core.config import Config
 
 _EMBEDDER_SINGLETON = None
 _EMBEDDER_ERROR: Optional[Exception] = None
+_TEXT_MODEL_CANDIDATES = ("text_encoder.onnx", "text_model.onnx", "model_text.onnx")
+_VISION_MODEL_CANDIDATES = ("vision_encoder.onnx", "image_encoder.onnx", "vision_model.onnx", "model_vision.onnx")
+_TOKENIZER_FILES = (
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "vocab.json",
+    "merges.txt",
+)
 
 
 def _resolve_existing_path(base_dir: str, candidates: Iterable[str]) -> str:
@@ -15,6 +24,24 @@ def _resolve_existing_path(base_dir: str, candidates: Iterable[str]) -> str:
         if os.path.exists(path):
             return path
     raise FileNotFoundError(f"None of the expected files were found in {base_dir}: {list(candidates)}")
+
+
+def _describe_missing_assets(model_dir: str) -> str:
+    missing = []
+    if not any(os.path.isfile(os.path.join(model_dir, name)) for name in _TEXT_MODEL_CANDIDATES):
+        missing.append(f"text ONNX model (expected one of: {', '.join(_TEXT_MODEL_CANDIDATES)})")
+    if not any(os.path.isfile(os.path.join(model_dir, name)) for name in _VISION_MODEL_CANDIDATES):
+        missing.append(f"vision ONNX model (expected one of: {', '.join(_VISION_MODEL_CANDIDATES)})")
+    missing_tokenizers = [name for name in _TOKENIZER_FILES if not os.path.isfile(os.path.join(model_dir, name))]
+    if missing_tokenizers:
+        missing.append(f"tokenizer files: {', '.join(missing_tokenizers)}")
+    if not missing:
+        return ""
+    return (
+        f"Missing multimodal assets in {model_dir}: "
+        + "; ".join(missing)
+        + ". Download them with `nexus-local setup --download-onnx` or follow README.md."
+    )
 
 
 def _l2_normalize(array: np.ndarray) -> np.ndarray:
@@ -51,14 +78,8 @@ class MultimodalOnnxEmbedder:
 
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir, local_files_only=True)
 
-        text_model_path = _resolve_existing_path(
-            model_dir,
-            ("text_encoder.onnx", "text_model.onnx", "model_text.onnx"),
-        )
-        vision_model_path = _resolve_existing_path(
-            model_dir,
-            ("vision_encoder.onnx", "image_encoder.onnx", "vision_model.onnx", "model_vision.onnx"),
-        )
+        text_model_path = _resolve_existing_path(model_dir, _TEXT_MODEL_CANDIDATES)
+        vision_model_path = _resolve_existing_path(model_dir, _VISION_MODEL_CANDIDATES)
 
         self.text_session = ort.InferenceSession(text_model_path, providers=self.providers)
         self.vision_session = ort.InferenceSession(vision_model_path, providers=self.providers)
@@ -226,5 +247,6 @@ def get_multimodal_embedder(force_refresh: bool = False) -> Optional[MultimodalO
         return _EMBEDDER_SINGLETON
     except Exception as exc:
         _EMBEDDER_ERROR = exc
-        print(f"⚠️ Multimodal embedder unavailable: {exc}")
+        detail = _describe_missing_assets(Config.MULTIMODAL_MODEL_DIR)
+        print(f"⚠️ Multimodal embedder unavailable: {detail or exc}")
         return None
