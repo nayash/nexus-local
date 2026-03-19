@@ -26,6 +26,8 @@ class AppLayout(ft.Row):
             page=page,
             on_view_file=self.show_file_viewer
         )
+        self.chat_view.set_chat_width_provider(self.get_chat_view_width)
+        self.chat_view.refresh_message_widths()
         self.settings_view = SettingsView(on_back_click=self.show_chat)
         self.file_viewer_view = FileViewerView(on_back_click=self.show_chat)
 
@@ -51,6 +53,18 @@ class AppLayout(ft.Row):
             self.active_view
         ]
 
+        if hasattr(self.app_page, "on_resize"):
+            self.app_page.on_resize = self.handle_page_resize
+        elif hasattr(self.app_page, "on_resized"):
+            self.app_page.on_resized = self.handle_page_resize
+
+    def get_chat_view_width(self):
+        page_width = getattr(self.app_page, "width", 0) or 0
+        sidebar_width = getattr(self.sidebar, "width", 250) or 250
+        splitter_width = 10
+        chat_width = page_width - sidebar_width - splitter_width
+        return max(int(chat_width), 320)
+
     def handle_resize_sidebar(self, e: ft.DragUpdateEvent):
         """Resizes the sidebar within 10% to 30% of page width."""
         if not self.page:
@@ -75,6 +89,23 @@ class AppLayout(ft.Row):
             
         self.sidebar.width = new_width
         self.sidebar.update()
+        self.chat_view.refresh_message_widths()
+
+    def handle_page_resize(self, e):
+        if not self.app_page:
+            return
+
+        page_width = self.app_page.width
+        min_width = page_width * 0.10
+        max_width = page_width * 0.30
+
+        if self.sidebar.width < min_width:
+            self.sidebar.width = min_width
+        elif self.sidebar.width > max_width:
+            self.sidebar.width = max_width
+
+        self.chat_view.refresh_message_widths()
+        self.update()
 
 
     def show_settings(self, e=None):
